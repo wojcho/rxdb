@@ -6,7 +6,13 @@
 -- Password: pass
 -- Database: postgres
 
-USE postgres;
+\c postgres
+
+-- =====================================================
+-- Extensions
+-- =====================================================
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- =====================================================
 -- Security
@@ -34,7 +40,7 @@ CREATE TABLE IF NOT EXISTS rxdb_base.object (
   object_id UUID PRIMARY KEY UNIQUE NOT NULL DEFAULT gen_random_uuid(),
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   creating_user_object_id UUID NOT NULL, -- fk_object_creating_user
-  CONSTRAINT fk_object_creating_user
+  CONSTRAINT fk_object_creating_user -- Here there is only seemingly a circular dependency, user has to be present to create objects, but that is why during bootstrap, admin user is created under temporarily disabled constraint, later when creating users they are created by admin
     FOREIGN KEY (creating_user_object_id)
     REFERENCES rxdb_base.object (object_id)
     ON UPDATE CASCADE
@@ -43,7 +49,7 @@ CREATE TABLE IF NOT EXISTS rxdb_base.object (
 
 -- Version Header
 CREATE TABLE IF NOT EXISTS rxdb_base.version (
-  version_id VARCHAR(1024) PRIMARY KEY UNIQUE NOT NULL DEFAULT gen_random_uuid()::varchar,
+  version_id VARCHAR(1024) PRIMARY KEY UNIQUE NOT NULL DEFAULT gen_random_uuid()::varchar, -- It is not just UUID, to enable users to set arbitrary version IDs for easier access, that UUID here is a fallback and should be used sparingly, TODO alternatively other random text could be used
   object_id UUID NOT NULL, -- fk_version_object
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   creating_user_object_id UUID NOT NULL, -- fk_version_creating_user
@@ -64,9 +70,7 @@ CREATE TABLE IF NOT EXISTS rxdb_base.version (
 -- User Version Data
 CREATE TABLE IF NOT EXISTS rxdb_private.user_version (
   version_id VARCHAR(1024) PRIMARY KEY NOT NULL, -- fk_user_version_version
-  username VARCHAR(256) UNIQUE,
-  password_hashed VARCHAR,
-  password_salt VARCHAR,
+  password_hash VARCHAR,
   CONSTRAINT fk_user_version_version
     FOREIGN KEY (version_id)
     REFERENCES rxdb_base.version (version_id)
@@ -108,12 +112,14 @@ BEGIN
     RETURNING object_id
     INTO new_object_id;
   INSERT INTO rxdb_base.version(
+      version_id,
       object_id,
       creating_user_object_id
     )
     VALUES(
+      new_username,
       new_object_id,
-      creator_id
+      'rxdb_admin'
     )
     RETURNING version_id
     INTO new_version_id;
@@ -133,16 +139,16 @@ END;
 $$;
 
 -- Validate password hash, Login as user (anyone can run)
-CREATE OR REPLACE PROCEDURE rxdb_private.login_as(
+CREATE OR REPLACE FUNCTION rxdb_private.is_valid_password(
   user_username VARCHAR,
   user_password VARCHAR
 )
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 AS $$
 BEGIN
   -- TODO SELECT password_hashed FROM rxdb_private.user_version
   -- TODO validate password hash
-  -- TODO log in as user
 END;
 $$;
 
@@ -181,153 +187,155 @@ $$;
 -- Domains/Schemas
 
 -- Select List of Accessible Schemas (anyone can run, output is different for them)
-CREATE OR REPLACE FUNCTION rxdb_base.select_accessible_schemas()
-RETURNS JSONB
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  retval JSONB;
-BEGIN
-  SELECT jsonb_agg(schema_name)
-  INTO retval
-  FROM information_schema.schemata
-  WHERE has_schema_privilege(
-    current_user,
-    schema_name,
-    'USAGE'
-  );
-  RETURN COALESCE(retval, '[]'::jsonb);
-END;
-$$;
+-- CREATE OR REPLACE FUNCTION rxdb_base.select_accessible_schemas()
+-- RETURNS JSONB
+-- LANGUAGE plpgsql
+-- AS $$
+-- DECLARE
+--   retval JSONB;
+-- BEGIN
+--   SELECT jsonb_agg(schema_name)
+--   INTO retval
+--   FROM information_schema.schemata
+--   WHERE has_schema_privilege(
+--     current_user,
+--     schema_name,
+--     'USAGE'
+--   );
+--   RETURN COALESCE(retval, '[]'::jsonb);
+-- END;
+-- $$;
 
 -- Select Permissions in a Schema (anyone with access to schema can run)
-CREATE OR REPLACE FUNCTION rxdb_base.select_schema_permissions(
-  domain_name VARCHAR
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  retval JSONB;
-BEGIN
-  SELECT jsonb_agg(privilege_type)
-  INTO retval
-  FROM information_schema.role_schema_grants
-  WHERE grantee = current_user
-    AND schema_name = p_schema;
-  RETURN COALESCE(retval, '[]'::jsonb);
-END;
-$$;
+-- CREATE OR REPLACE FUNCTION rxdb_base.select_schema_permissions(
+--   domain_name VARCHAR
+-- )
+-- RETURNS JSONB
+-- LANGUAGE plpgsql
+-- AS $$
+-- DECLARE
+--   retval JSONB;
+-- BEGIN
+--   SELECT jsonb_agg(privilege_type)
+--   INTO retval
+--   FROM information_schema.role_schema_grants
+--   WHERE grantee = current_user
+--     AND schema_name = p_schema;
+--   RETURN COALESCE(retval, '[]'::jsonb);
+-- END;
+-- $$;
 
 -- Create Custom Domain/Schema (Schema and Log Table) (anoyone can run)
-CREATE OR REPLACE PROCEDURE rxdb_base.create_domain (
-  domain_name VARCHAR,
-  schema_permissions JSONB
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  -- TODO parse schema_permissions
-  EXECUTE format(
-    'CREATE SCHEMA IF NOT EXISTS %I',
-    domain_name
-  );
-  EXECUTE format(
-    '
-    CREATE TABLE IF NOT EXISTS %I.log_version (
-      version_id VARCHAR(1024) PRIMARY KEY,
-      creating_user_object_id UUID NOT NULL,
-      operation JSONB,
-      CONSTRAINT fk_log_version_version_%I
-        FOREIGN KEY (version_id)
-        REFERENCES rxdb_base.version (version_id)
-        ON UPDATE CASCADE
-        ON DELETE CASCADE
-    )',
-    domain_name
-  );
-  CALL rxdb_base.update_domain_permissions(
-    domain_name,
-    schema_permissions
-  );
-END;
-$$;
+-- CREATE OR REPLACE PROCEDURE rxdb_base.create_domain (
+--   domain_name VARCHAR,
+--   schema_permissions JSONB
+-- )
+-- LANGUAGE plpgsql
+-- AS $$
+-- BEGIN
+--   -- TODO parse schema_permissions
+--   EXECUTE format(
+--     'CREATE SCHEMA IF NOT EXISTS %I',
+--     domain_name
+--   );
+--   EXECUTE format(
+--     '
+--     CREATE TABLE IF NOT EXISTS %I.log_version (
+--       version_id VARCHAR(1024) PRIMARY KEY,
+--       creating_user_object_id UUID NOT NULL,
+--       operation JSONB,
+--       CONSTRAINT fk_log_version_version_%I
+--         FOREIGN KEY (version_id)
+--         REFERENCES rxdb_base.version (version_id)
+--         ON UPDATE CASCADE
+--         ON DELETE CASCADE
+--     )', -- TODO fk_log_version_version_ avoid SQL injection without potential '' mid-name which could cause errors
+--     domain_name
+--   );
+--   CALL rxdb_base.update_domain_permissions(
+--     domain_name,
+--     schema_permissions
+--   );
+-- END;
+-- $$;
 
 -- Update Custom Domain/Schema Permissions (anyone with schema permission editing permission can run)
-CREATE OR REPLACE PROCEDURE rxdb_base.update_domain_permissions (
-  domain_name VARCHAR,
-  schema_permissions JSONB
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  -- TODO
-  -- revoke all permissions
-  -- grant new permissions
-END;
-$$;
+-- CREATE OR REPLACE PROCEDURE rxdb_base.update_domain_permissions (
+--   domain_name VARCHAR,
+--   schema_permissions JSONB
+-- )
+-- LANGUAGE plpgsql
+-- AS $$
+-- BEGIN
+--   -- TODO
+--   -- revoke all permissions
+--   -- grant new permissions
+-- END;
+-- $$;
 
 -- Tables/Types
 
 -- Select List of All Tables in Schema (anyone with access to schema can run)
-CREATE OR REPLACE FUNCTION rxdb_base.select_table_names_in_schema(
-  domain_name VARCHAR
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  retval JSONB;
-BEGIN
-  SELECT jsonb_agg(table_name)
-  INTO retval
-  FROM information_schema.tables
-  WHERE table_schema = domain_name
-    AND table_type = 'BASE TABLE';
-  RETURN COALESCE(retval, '[]'::jsonb);
-END;
-$$;
+-- CREATE OR REPLACE FUNCTION rxdb_base.select_table_names_in_schema(
+--   domain_name VARCHAR
+-- )
+-- RETURNS JSONB
+-- LANGUAGE plpgsql
+-- AS $$
+-- DECLARE
+--   retval JSONB;
+-- BEGIN
+--   SELECT jsonb_agg(table_name)
+--   INTO retval
+--   FROM information_schema.tables
+--   WHERE table_schema = domain_name
+--     AND table_type = 'BASE TABLE';
+--   RETURN COALESCE(retval, '[]'::jsonb);
+-- END;
+-- $$;
 
 -- Select Type/Table Definition (anyone with access to schema can run)
-CREATE OR REPLACE FUNCTION rxdb_base.select_table_definition(
-  domain_name VARCHAR,
-  type_name VARCHAR
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  retval JSONB;
-BEGIN
-  -- TODO select information about indices, foreign keys
-  SELECT jsonb_agg(
-    jsonb_build_object(
-      'column_name', column_name,
-      'data_type', data_type,
-      'nullable', is_nullable,
-      'default', column_default
-    )
-  )
-  INTO retval
-  FROM information_schema.columns
-  WHERE table_schema = domain_name
-    AND table_name = type_name;
-  RETURN COALESCE(retval, '[]'::jsonb);
-END;
-$$;
+-- CREATE OR REPLACE FUNCTION rxdb_base.select_table_definition(
+--   domain_name VARCHAR,
+--   type_name VARCHAR
+-- )
+-- RETURNS JSONB
+-- LANGUAGE plpgsql
+-- AS $$
+-- DECLARE
+--   retval JSONB;
+-- BEGIN
+--   -- TODO select information about indices, foreign keys
+--   SELECT jsonb_agg(
+--     jsonb_build_object(
+--       'column_name', column_name,
+--       'data_type', data_type,
+--       'nullable', is_nullable,
+--       'default', column_default
+--     )
+--   )
+--   INTO retval
+--   FROM information_schema.columns
+--   WHERE table_schema = domain_name
+--     AND table_name = type_name;
+--   RETURN COALESCE(retval, '[]'::jsonb);
+-- END;
+-- $$;
 
 -- Create Custom Type/Table (anyone with access to schema can run)
-CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
-  domain_name VARCHAR,
-  type_name VARCHAR,
-  table_definition JSONB -- as returned by table_definition
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  CREATE TABLE domain_name.type_name ();
-END;
-$$;
+-- CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
+--   domain_name VARCHAR,
+--   type_name VARCHAR,
+--   table_definition JSONB -- as returned by table_definition
+-- )
+-- LANGUAGE plpgsql
+-- AS $$
+-- BEGIN
+--   -- TODO
+--   CREATE TABLE domain_name.type_name ();
+--   -- TODO later after getting it to work, it could also create a function view with joined rxdb_base.object, rxdb_base.version, domain_name.type_name to show latest versions, but that is for later
+-- END;
+-- $$;
 
 -- =====================================================
 -- Restrict Security
@@ -392,7 +400,7 @@ ON PROCEDURE rxdb_private.create_user
 TO rxdb_admin;
 
 -- Any user can create their own schemas, where they can do anything
-GRANT CREATE ON DATABASE current_database() TO PUBLIC;
+GRANT CREATE ON DATABASE postgres TO PUBLIC;
 
 -- =====================================================
 -- Initialization
@@ -401,9 +409,7 @@ GRANT CREATE ON DATABASE current_database() TO PUBLIC;
 -- Create first user, rxdb_admin
 -- TODO
 -- remove constraint fk_object_creating_user on rxdb_base.object
--- INSERT INTO rxdb_base.object () VALUES ();
--- INSERT INTO rxdb_base.version () VALUES ();
--- INSERT INTO rxdb_private.user_version () VALUES ();
+-- CALL rxdb_private.create_user()
 -- readd constraint fk_object_creating_user on rxdb_base.object
 
 -- =====================================================
