@@ -1,4 +1,4 @@
--- For testing: sudo docker run --rm --name pg-test -e POSTGRES_PASSWORD=pass -p 5432:5432 -d postgres:18
+-- For testing: `docker run --rm --name pg-test -e POSTGRES_PASSWORD=pass -p 5432:5432 -d postgres:18`
 -- In PostgreSQL VSCodium extension set the following:
 -- Server name: localhost
 -- Port: 5432
@@ -6,86 +6,322 @@
 -- Password: pass
 -- Database: postgres
 
--- Extensions
+USE postgres;
 
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
+-- =====================================================
 -- Security
+-- =====================================================
 
-CREATE USER admin WITH ENCRYPTED PASSWORD "SECRET_HERE";
+CREATE ROLE rxdb_admin LOGIN PASSWORD 'SECRET_HERE';
+CREATE ROLE rxdb_user;
 
 -- Public schema, any users can read and insert, other operations are forbidden for them
-CREATE SCHEMA rxdb_base;
--- TODO
+CREATE SCHEMA IF NOT EXISTS rxdb_base;
+ALTER SCHEMA rxdb_base OWNER TO rxdb_admin;
 
 -- Private, only admin can read and insert, other opertations are forbidden for anyone
-CREATE SCHEMA rxdb_private;
--- TODO
+CREATE SCHEMA IF NOT EXISTS rxdb_private;
+ALTER SCHEMA rxdb_private OWNER TO rxdb_admin;
 
--- TODO Maybe focus on granting permissions to tables later, after all tables, procedures, functions are created
+-- Setting permissions is done at end of the script
 
--- Any user can create their own schemas
--- TODO
-
+-- =====================================================
 -- Initializing tables
+-- =====================================================
 
 -- Object header
-CREATE TABLE rxdb_base.object (
-  object_id UUID PRIMARY KEY UNIQUE NOT NULL DEFAULT uuid_generate_v4(),
+CREATE TABLE IF NOT EXISTS rxdb_base.object (
+  object_id UUID PRIMARY KEY UNIQUE NOT NULL DEFAULT gen_random_uuid(),
   created_at TIMESTAMP NOT NULL DEFAULT now(),
-  creating_user_object_id UUID NOT NULL,
+  creating_user_object_id UUID NOT NULL,  -- fk_object_creating_user
+  CONSTRAINT fk_object_creating_user
+    FOREIGN KEY (creating_user_object_id)
+    REFERENCES rxdb_base.object (object_id)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT
 );
 
 -- Version Header
-CREATE TABLE rxdb_base.version (
-  version_id VARCHAR(1024) PRIMARY KEY UNIQUE NOT NULL,
-  object_id UUID NOT NULL,
+CREATE TABLE IF NOT EXISTS rxdb_base.version (
+  version_id UUID PRIMARY KEY UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+  object_id UUID NOT NULL,  -- fk_version_object
   created_at TIMESTAMP NOT NULL DEFAULT now(),
-  creating_user_object_id UUID NOT NULL,
-  is_property BOOLEAN DEFAULT FALSE, -- Whether that version can be used in graph as an edge
-  is_tombstone BOOLEAN DEFAULT FALSE, -- Whether that version is logically removed ()
+  creating_user_object_id UUID NOT NULL, -- fk_version_creating_user
+  is_property BOOLEAN DEFAULT FALSE, -- Whether that version can be used in graph as an edge (TODO graph queries later)
+  is_tombstone BOOLEAN DEFAULT FALSE, -- Whether that version is logically removed (usual removal is forbidden)
+  CONSTRAINT fk_version_object
+    FOREIGN KEY (object_id)
+    REFERENCES rxdb_base.object (object_id)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE,
+  CONSTRAINT fk_version_creating_user
+    FOREIGN KEY (creating_user_object_id)
+    REFERENCES rxdb_base.object (object_id)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT
 );
 
 -- User Version Data
-CREATE TABLE rxdb_private.user_version (
-  version_id VARCHAR(1024) NOT NULL,
+CREATE TABLE IF NOT EXISTS rxdb_private.user_version (
+  version_id UUID PRIMARY KEY NOT NULL, -- fk_user_version_version
   username VARCHAR(256),
   password_hashed VARCHAR,
   password_salt VARCHAR,
+  CONSTRAINT fk_user_version_version
+    FOREIGN KEY (version_id)
+    REFERENCES rxdb_base.version (version_id)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE
 );
 
--- Log Version Data (per schema)
--- CREATE TABLE log_version (
---   version_id UUID NOT NULL,
---   creating_user_object_id UUID NOT NULL,
---   operation VARCHAR,
--- );
+-- Log Version Data (similar tables also per schema)
+CREATE TABLE IF NOT EXISTS rxdb_base.log_version (
+  version_id UUID PRIMARY KEY NOT NULL, -- fk_log_version_version
+  creating_user_object_id UUID NOT NULL,
+  operation JSONB,
+  CONSTRAINT fk_log_version_version
+    FOREIGN KEY (version_id)
+    REFERENCES rxdb_base.version (version_id)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE
+);
 
+-- =====================================================
 -- Procedures and Functions
+-- =====================================================
 
--- Create User (only admin can run)
--- TODO
+-- User
+
+-- Insert User (only admin can run)
+CREATE OR REPLACE PROCEDURE rxdb_private.insert_user(
+  new_username VARCHAR,
+  new_password VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- TODO create database user
+  -- TODO grant them role rxdb_user
+  INSERT INTO rxdb_base.object () VALUES ();
+  INSERT INTO rxdb_base.version () VALUES ();
+  INSERT INTO rxdb_private.user_version () VALUES ();
+END;
+$$;
 
 -- Update User by Adding New Version (admin and user themselves can run)
--- TODO
+CREATE OR REPLACE PROCEDURE rxdb_private.update_user(
+  object_id UUID,
+  new_username VARCHAR,
+  new_password VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- TODO
+  INSERT INTO rxdb_base.version () VALUES ();
+  INSERT INTO rxdb_private.user_version () VALUES ();
+END;
+$$;
 
--- Create Log (anyone can run)
--- TODO
+-- Log
 
--- Create Custom Domain (Schema and Log Table) (anoyone can run)
--- TODO
+-- Insert Log (anyone can run)
+CREATE OR REPLACE PROCEDURE rxdb_base.insert_log(
+  domain_name VARCHAR,
+  operation JSONB
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- TODO
+  INSERT INTO rxdb_base.object () VALUES ();
+  INSERT INTO rxdb_base.version () VALUES ();
+  INSERT INTO rxdb_base.insert_log () VALUES ();
+END;
+$$;
+
+-- Domains/Schemas
 
 -- Select List of Accessible Schemas (anyone can run, output is different for them)
--- TODO
+CREATE OR REPLACE FUNCTION rxdb_base.select_accessible_schemas (
+) RETURNS JSONB AS $$
+DECLARE retval JSONB;
+BEGIN
+  -- TODO
+  SELECT schema_name
+  FROM information_schema.schemata
+  WHERE has_schema_privilege(
+    current_user,
+    schema_name,
+    'USAGE'
+  );
+END;
+$$;
 
--- Select Permissions in Schema (anyone can run, output is different for them)
--- TODO
+-- Select Permissions in a Schema (anyone with access to schema can run)
+CREATE OR REPLACE FUNCTION rxdb_base.select_schema_permissions (
+) RETURNS JSONB AS $$
+DECLARE retval JSONB;
+BEGIN
+  -- TODO
+  SELECT privilege_type
+    FROM information_schema.schema_privileges
+    WHERE grantee = current_user
+    AND schema_name = p_schema;
+  RETURN retval;
+END;
+$$;
+
+-- Create Custom Domain/Schema (Schema and Log Table) (anoyone can run)
+CREATE OR REPLACE PROCEDURE rxdb_base.create_domain (
+  domain_name VARCHAR,
+  schema_permissions JSONB
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- TODO parse schema_permissions
+  -- TODO use EXECUTE
+  CREATE SCHEMA domain_name;
+  CREATE TABLE IF NOT EXISTS domain_name.log_version ();
+  -- TODO
+  -- revoke all permissions
+  -- grant new permissions
+END;
+$$;
+
+-- Update Custom Domain/Schema Permissions (anyone with schema permission editing permission can run)
+CREATE OR REPLACE PROCEDURE rxdb_base.update_domain_permissions (
+  domain_name VARCHAR,
+  schema_permissions JSONB
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- TODO
+  -- revoke all permissions
+  -- grant new permissions
+END;
+$$;
+
+-- Tables/Types
 
 -- Select List of All Tables in Schema (anyone with access to schema can run)
--- TODO
+CREATE OR REPLACE FUNCTION rxdb_base.select_table_names_in_schema (
+  domain_name VARCHAR,
+) RETURNS JSONB AS $$
+DECLARE retval JSONB;
+BEGIN
+  -- TODO select list of tables in schema domain_name
+  RETURN retval;
+END;
+$$;
 
--- Select Table Definition (anyone with access to schema can run)
--- TODO
+-- Select Type/Table Definition (anyone with access to schema can run)
+CREATE OR REPLACE FUNCTION rxdb_base.select_table_definition (
+  domain_name VARCHAR,
+  type_name VARCHAR,
+) RETURNS JSONB AS $$
+DECLARE retval JSONB;
+BEGIN
+  -- TODO select table definition
+  -- TODO select information about constraints
+  -- TODO dump this to JSON
+  RETURN retval;
+END;
+$$;
 
+-- Create Custom Type/Table (anyone with access to schema can run)
+CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
+  domain_name VARCHAR,
+  type_name VARCHAR,
+  table_definition JSONB -- as returned by table_definition
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  CREATE TABLE domain_name.type_name ();
+END;
+$$;
+
+-- =====================================================
+-- Restrict Security
+-- =====================================================
+
+-- Public schema, any users can read and insert, other operations are forbidden for them
+REVOKE ALL ON SCHEMA rxdb_base FROM PUBLIC;
+GRANT USAGE ON SCHEMA rxdb_base TO PUBLIC;
+
+-- Tables
+
+GRANT SELECT, INSERT
+ON ALL TABLES IN SCHEMA rxdb_base
+TO PUBLIC;
+
+REVOKE UPDATE, DELETE, TRUNCATE
+ON ALL TABLES IN SCHEMA rxdb_base
+FROM PUBLIC;
+
+ALTER DEFAULT PRIVILEGES
+FOR ROLE rxdb_admin
+IN SCHEMA rxdb_base
+GRANT SELECT, INSERT ON TABLES TO PUBLIC;
+
+ALTER DEFAULT PRIVILEGES
+FOR ROLE rxdb_admin
+IN SCHEMA rxdb_base
+REVOKE UPDATE, DELETE, TRUNCATE ON TABLES FROM PUBLIC;
+
+-- Private, only admin can read and insert, other opertations are forbidden for anyone
+REVOKE ALL ON SCHEMA rxdb_private FROM PUBLIC;
+GRANT USAGE ON SCHEMA rxdb_private TO rxdb_admin;
+
+-- Tables
+
+GRANT ALL
+ON ALL TABLES IN SCHEMA rxdb_private
+TO rxdb_admin;
+
+REVOKE ALL
+ON ALL TABLES IN SCHEMA rxdb_private
+FROM PUBLIC;
+
+ALTER DEFAULT PRIVILEGES
+FOR ROLE rxdb_admin
+IN SCHEMA rxdb_private
+GRANT ALL ON TABLES TO rxdb_admin;
+
+ALTER DEFAULT PRIVILEGES
+FOR ROLE rxdb_admin
+IN SCHEMA rxdb_private
+REVOKE ALL ON TABLES FROM PUBLIC;
+
+-- Procedures
+
+REVOKE ALL
+ON PROCEDURE rxdb_private.create_user
+FROM PUBLIC;
+
+GRANT EXECUTE
+ON PROCEDURE rxdb_private.create_user
+TO rxdb_admin;
+
+-- Any user can create their own schemas, where they can do anything
+GRANT CREATE ON DATABASE current_database() TO PUBLIC;
+
+-- =====================================================
+-- Initialization
+-- =====================================================
+
+-- Create first user, rxdb_admin
+-- TODO
+-- remove constraint fk_object_creating_user on rxdb_base.object
+-- INSERT INTO rxdb_base.object () VALUES ();
+-- INSERT INTO rxdb_base.version () VALUES ();
+-- INSERT INTO rxdb_private.user_version () VALUES ();
+-- readd constraint fk_object_creating_user on rxdb_base.object
+
+-- =====================================================
 -- Custom Schemas, Tables, Versions
+-- =====================================================
 -- TODO
