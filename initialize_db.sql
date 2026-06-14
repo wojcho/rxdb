@@ -347,6 +347,54 @@ AS $$
     ON grantee_role.oid = x.grantee;
 $$;
 
+-- TODO default ACLs
+
+-- {
+--   "schema": {
+--     "name": "rxdb_base",
+--     "acl": [...]
+--   },
+--   "relations": {
+--     "users": {
+--       "kind": "r",
+--       "owner": "rxdb_admin",
+--       "acl": [...]
+--     },
+--     "users_id_seq": {
+--       "kind": "S",
+--       "owner": "rxdb_admin",
+--       "acl": [...]
+--     }
+--   },
+--   "routines": {
+--     "rxdb_base.do_something(integer)": {
+--       "name": "do_something",
+--       "kind": "f",
+--       "owner": "rxdb_admin",
+--       "language": "plpgsql",
+--       "acl": [...]
+--     }
+--   },
+--   "types": {
+--     "user_status": {
+--       "kind": "e",
+--       "owner": "rxdb_admin",
+--       "acl": [...]
+--     }
+--   },
+--   "default_privileges": {
+--     "rxdb_admin": {
+--       "schema": "rxdb_base",
+--       "objects": {
+--         "r": ["SELECT"],
+--         "S": ["USAGE"],
+--         "f": ["EXECUTE"]
+--       }
+--     }
+--   }
+-- }
+
+
 -- Select Permissions in a Schema, used for reflection purposes (anyone with access to schema can run)
 CREATE OR REPLACE FUNCTION rxdb_base.select_schema_permissions(
   schema_name varchar
@@ -356,8 +404,13 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   schema_oid oid;
+  relations_json jsonb;
+  routines_json jsonb;
+  types_json jsonb;
+  default_privileges_json jsonb;
   retval jsonb;
 BEGIN
+  -- Schema oid
   SELECT oid
   INTO schema_oid
   FROM pg_namespace
@@ -369,12 +422,113 @@ BEGIN
       schema_name;
   END IF;
 
+  -- Relations
+  SELECT COALESCE(
+    jsonb_object_agg(
+      c.relname,
+      jsonb_build_object(
+        'kind', c.relkind,
+        'owner', owner_role.rolname,
+        'acl', rxdb_base.acl_to_json(c.relacl)
+      )
+      ORDER BY c.relname
+    ),
+    '{}'::jsonb
+  )
+  INTO relations_json
+  FROM pg_class c
+  JOIN pg_roles owner_role
+    ON owner_role.oid = c.relowner
+  WHERE c.relnamespace = schema_oid;
+
+  -- Routines
+  SELECT COALESCE(
+    jsonb_object_agg(
+      (p.oid::regprocedure::text),
+      jsonb_build_object(
+        'name', p.proname,
+        'kind', p.prokind,
+        'owner', r.rolname,
+        'acl', rxdb_base.acl_to_json(p.proacl),
+        'language',
+          l.lanname
+      )
+      ORDER BY (p.oid::regprocedure::text)
+    ),
+    '{}'::jsonb
+  )
+  INTO routines_json
+  FROM pg_proc p
+  JOIN pg_namespace n
+    ON n.oid = p.pronamespace
+  JOIN pg_roles r
+    ON r.oid = p.proowner
+  JOIN pg_language l
+    ON l.oid = p.prolang
+  WHERE p.pronamespace = schema_oid;
+
+  -- Types
+  SELECT COALESCE(
+    jsonb_object_agg(
+      t.typname,
+      jsonb_build_object(
+        'kind', t.typtype,
+        'owner', r.rolname,
+        'acl', rxdb_base.acl_to_json(t.typacl)
+      )
+      ORDER BY t.typname
+    ),
+    '{}'::jsonb
+  )
+  INTO types_json
+  FROM pg_type t
+  JOIN pg_namespace n
+    ON n.oid = t.typnamespace
+  JOIN pg_roles r
+    ON r.oid = t.typowner
+  WHERE t.typnamespace = schema_oid;
+
+  -- Default
+  SELECT COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'owner', owner_role.rolname,
+        'schema',
+          CASE
+            WHEN d.defaclnamespace IS NULL THEN NULL
+            ELSE ns.nspname
+          END,
+        'object_type', d.defaclobjtype,
+        'acl', rxdb_base.acl_to_json(d.defaclacl)
+      )
+      ORDER BY owner_role.rolname, d.defaclobjtype
+    ),
+    '[]'::jsonb
+  )
+  INTO default_privileges_json
+  FROM pg_default_acl d
+  JOIN pg_roles owner_role
+    ON owner_role.oid = d.defaclrole
+  LEFT JOIN pg_namespace ns
+    ON ns.oid = d.defaclnamespace
+  WHERE d.defaclnamespace = schema_oid
+    OR d.defaclnamespace IS NULL;
+
+  -- Retval
   SELECT jsonb_build_object(
     'schema',
-    jsonb_build_object(
+    jsonb_build_object( -- Schema
       'name', n.nspname,
       'acl', rxdb_base.acl_to_json(n.nspacl)
-    )
+    ),
+    'relations',
+    relations_json,
+    'routines',
+    routines_json,
+    'types',
+    types_json,
+    'default_privileges',
+    default_privileges_json
   )
   INTO retval
   FROM pg_namespace n
@@ -593,3 +747,5 @@ GRANT CREATE ON DATABASE postgres TO PUBLIC;
 -- Custom Schemas, Tables, Versions
 -- =====================================================
 -- TODO
+
+SELECT rxdb_base.select_schema_permissions('rxdb_base');
