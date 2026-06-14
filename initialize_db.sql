@@ -1366,13 +1366,13 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   col JSONB;
-  cols_sql TEXT := '';
-  pk_cols TEXT := '';
-  pk_sql TEXT;
-  fk JSONB;
-  idx JSONB;
+  cols_sql VARCHAR := '';
+  pk_cols VARCHAR := '';
+  pk_sql VARCHAR;
+  fk RECORD; -- (key TEXT, value JSONB);
+  idx RECORD; -- (key TEXT, value JSONB);
 
-  full_table_ident TEXT := format('%I.%I', domain_name, type_name);
+  full_table_ident VARCHAR := format('%I.%I', domain_name, type_name);
 BEGIN
   -- Validate definition
   IF NOT rxdb_base.is_valid_table_definition(domain_name, type_name, table_definition) THEN
@@ -1392,9 +1392,15 @@ BEGIN
         ELSE ''
       END,
       CASE
-        WHEN col ? 'default' AND col->'default' IS NOT NULL THEN
-          'DEFAULT ' || col->>'default'
-        ELSE ''
+        WHEN col ? 'default' THEN
+          CASE
+            WHEN col->'default' = 'null'::jsonb THEN
+              'DEFAULT NULL'
+            ELSE
+              'DEFAULT ' || quote_literal(col->>'default')
+          END
+        ELSE
+          ''
       END
     );
   END LOOP;
@@ -1737,21 +1743,30 @@ SELECT rxdb_base.prefill_table_definition( 'rxdb_base', 'testing', $json$
 $json$::jsonb
 );
 
-WITH def AS (
-  SELECT rxdb_base.prefill_table_definition('rxdb_base', 'testing', $json$
-  {
-    "columns": [
-      {
-        "name": "abc",
-        "type": "integer",
-        "default": null,
-        "nullable": false
-      }
-    ]
-  }
-  $json$::jsonb) AS obj
-)
-SELECT rxdb_base.is_valid_table_definition('rxdb_base','testing', obj) FROM def;
+DO $$
+DECLARE
+  obj jsonb;
+BEGIN
+  WITH def AS (
+    SELECT rxdb_base.prefill_table_definition('rxdb_base','testing', $json$
+    {
+      "columns": [
+        {
+          "name": "abc",
+          "type": "integer",
+          "default": null,
+          "nullable": false
+        }
+      ]
+    }
+    $json$::jsonb) AS obj
+  )
+  SELECT def.obj INTO obj FROM def;
+
+  CALL rxdb_base.create_type('rxdb_base','testing', obj);
+END $$;
+
+
 
 SELECT rxdb_base.select_table_names_in_schema('rxdb_base');
 
