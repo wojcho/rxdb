@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS rxdb_base.object (
   CONSTRAINT fk_object_creating_user -- Here there is only seemingly a circular dependency, user has to be present to create objects, but that is why during bootstrap, admin user is created under temporarily disabled constraint, later when creating users they are created by admin
     FOREIGN KEY (creating_user_object_id)
     REFERENCES rxdb_base.object (object_id)
-    ON UPDATE CASCADE
+    ON UPDATE RESTRICT
     ON DELETE RESTRICT
 );
 
@@ -58,24 +58,24 @@ CREATE TABLE IF NOT EXISTS rxdb_base.version (
   CONSTRAINT fk_version_object
     FOREIGN KEY (object_id)
     REFERENCES rxdb_base.object (object_id)
-    ON UPDATE CASCADE
-    ON DELETE CASCADE,
+    ON UPDATE RESTRICT
+    ON DELETE RESTRICT,
   CONSTRAINT fk_version_creating_user
     FOREIGN KEY (creating_user_object_id)
     REFERENCES rxdb_base.object (object_id)
-    ON UPDATE CASCADE
+    ON UPDATE RESTRICT
     ON DELETE RESTRICT
 );
 
 -- User Version Data
 CREATE TABLE IF NOT EXISTS rxdb_private.user_version (
-  version_id VARCHAR(1024) PRIMARY KEY NOT NULL, -- fk_user_version_version
+  version_id VARCHAR(1024) PRIMARY KEY NOT NULL, -- fk_user_version_version version_id is used as username
   password_hash VARCHAR,
   CONSTRAINT fk_user_version_version
     FOREIGN KEY (version_id)
     REFERENCES rxdb_base.version (version_id)
-    ON UPDATE CASCADE
-    ON DELETE CASCADE
+    ON UPDATE RESTRICT
+    ON DELETE RESTRICT
 );
 
 -- Log Version Data (similar tables also per schema)
@@ -86,8 +86,8 @@ CREATE TABLE IF NOT EXISTS rxdb_base.log_version (
   CONSTRAINT fk_log_version_version_rxdb_base
     FOREIGN KEY (version_id)
     REFERENCES rxdb_base.version (version_id)
-    ON UPDATE CASCADE
-    ON DELETE CASCADE
+    ON UPDATE RESTRICT
+    ON DELETE RESTRICT
 );
 
 -- =====================================================
@@ -119,7 +119,7 @@ BEGIN
     VALUES(
       new_username,
       new_object_id,
-      'rxdb_admin'
+      '00000000-0000-0000-0000-000000000000' -- this would normally be run only after creating admin user, this is UUID of admin
     )
     RETURNING version_id
     INTO new_version_id;
@@ -180,7 +180,7 @@ BEGIN
   -- TODO
   INSERT INTO rxdb_base.object () VALUES ();
   INSERT INTO rxdb_base.version () VALUES ();
-  INSERT INTO rxdb_base.insert_log () VALUES ();
+  INSERT INTO rxdb_base.log_version () VALUES ();
 END;
 $$;
 
@@ -334,6 +334,23 @@ $$;
 --   -- TODO
 --   CREATE TABLE domain_name.type_name ();
 --   -- TODO later after getting it to work, it could also create a function view with joined rxdb_base.object, rxdb_base.version, domain_name.type_name to show latest versions, but that is for later
+--   -- TODO also later, using doubly nested EXECUTE, a function to insert to that custom type could be made
+--   -- Create Custom Type/Table (anyone with insert access to that table can run)
+--   'CREATE OR REPLACE PROCEDURE rxdb_base.insert_log(
+--     domain_name VARCHAR,
+--     type_name VARCHAR,
+--     new_data JSONB
+--   )
+--   LANGUAGE plpgsql
+--   AS $$
+--   BEGIN
+--     -- TODO
+--     INSERT INTO rxdb_base.object () VALUES ();
+--     INSERT INTO rxdb_base.version () VALUES ();
+--     -- use EXECUTE with %I
+--     INSERT INTO domain_name.type_name () VALUES ();
+--   END;
+--   $$;'
 -- END;
 -- $$;
 
@@ -392,11 +409,11 @@ REVOKE ALL ON TABLES FROM PUBLIC;
 -- Procedures
 
 REVOKE ALL
-ON PROCEDURE rxdb_private.create_user
+ON PROCEDURE rxdb_private.insert_user
 FROM PUBLIC;
 
 GRANT EXECUTE
-ON PROCEDURE rxdb_private.create_user
+ON PROCEDURE rxdb_private.insert_user
 TO rxdb_admin;
 
 -- Any user can create their own schemas, where they can do anything
@@ -408,9 +425,9 @@ GRANT CREATE ON DATABASE postgres TO PUBLIC;
 
 -- Create first user, rxdb_admin
 -- TODO
--- remove constraint fk_object_creating_user on rxdb_base.object
--- CALL rxdb_private.create_user()
--- readd constraint fk_object_creating_user on rxdb_base.object
+-- remove constraint fk_object_creating_user on rxdb_base.object, fk_version_creating_user on rxdb_base.version
+-- do what is usually done in rxdb_private.create_user(), but set user object uuid as '00000000-0000-0000-0000-000000000000'
+-- readd constraint fk_object_creating_user on rxdb_base.object, fk_version_creating_user on rxdb_base.version
 
 -- =====================================================
 -- Custom Schemas, Tables, Versions
