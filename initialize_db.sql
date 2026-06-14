@@ -575,7 +575,7 @@ BEGIN
       CASE d.defaclobjtype
         WHEN 'r' THEN 'tables'
         WHEN 'S' THEN 'sequences'
-        WHEN 'f' THEN 'functions'
+        WHEN 'f' THEN 'routines'
         WHEN 'T' THEN 'types'
         WHEN 'n' THEN 'schemas'
         WHEN 'd' THEN 'domains'
@@ -678,33 +678,219 @@ BEGIN
   CASE privilege_target -- https://www.postgresql.org/docs/current/ddl-priv.html#PRIVILEGES-SUMMARY-TABLE
     WHEN 'schema' THEN
       IF privilege_name NOT IN ('USAGE', 'CREATE') THEN
-        RAISE EXCEPTION 'Invalid schema privilege: %', privilege_name;
+        RAISE EXCEPTION 'Wrong schema privilege: %', privilege_name;
       END IF;
 
     WHEN 'table' THEN
       IF privilege_name NOT IN ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER') THEN
-        RAISE EXCEPTION 'Invalid table privilege: %', privilege_name;
+        RAISE EXCEPTION 'Wrong table privilege: %', privilege_name;
       END IF;
 
     WHEN 'function' THEN
       IF privilege_name NOT IN ('EXECUTE') THEN
-        RAISE EXCEPTION 'Invalid function privilege: %', privilege_name;
+        RAISE EXCEPTION 'Wrong function privilege: %', privilege_name;
       END IF;
 
     WHEN 'type' THEN
       IF privilege_name NOT IN ('USAGE') THEN
-        RAISE EXCEPTION 'Invalid type privilege: %', privilege_name;
+        RAISE EXCEPTION 'Wrong type privilege: %', privilege_name;
       END IF;
 
     WHEN 'default' THEN
       IF privilege_name NOT IN ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','EXECUTE') THEN
-        RAISE EXCEPTION 'Invalid default privilege: %', privilege_name;
+        RAISE EXCEPTION 'Wrong default privilege: %', privilege_name;
       END IF;
     ELSE
       RAISE EXCEPTION 'Unknown privilege context';
   END CASE;
 
   RETURN privilege_name;
+END;
+$$;
+
+-- Helper for privilege revoking on schemas (only schema owner can call)
+CREATE OR REPLACE PROCEDURE rxdb_base.revoke_all_schema_grants(
+  p_schema_name varchar
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  role_name text;
+BEGIN
+  FOR role_name IN
+    SELECT DISTINCT
+      CASE
+        WHEN x.grantee = 0 THEN 'PUBLIC'
+        ELSE r.rolname
+      END
+    FROM pg_namespace n
+    CROSS JOIN LATERAL aclexplode(n.nspacl) x
+    LEFT JOIN pg_roles r
+      ON r.oid = x.grantee
+    WHERE n.nspname = p_schema_name
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL ON SCHEMA %I FROM %I',
+      p_schema_name,
+      role_name
+    );
+  END LOOP;
+END;
+$$;
+
+-- Helper for privilege revoking on relations (only schema owner can call)
+CREATE OR REPLACE PROCEDURE rxdb_base.revoke_all_relation_grants(
+  p_schema_name varchar,
+  p_relation_name varchar
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  role_name text;
+BEGIN
+  FOR role_name IN
+    SELECT DISTINCT
+      CASE
+        WHEN x.grantee = 0 THEN 'PUBLIC'
+        ELSE r.rolname
+      END
+    FROM pg_class c
+    JOIN pg_namespace n
+      ON n.oid = c.relnamespace
+    CROSS JOIN LATERAL aclexplode(c.relacl) x
+    LEFT JOIN pg_roles r
+      ON r.oid = x.grantee
+    WHERE n.nspname = p_schema_name
+      AND c.relname = p_relation_name
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL ON TABLE %I.%I FROM %I',
+      p_schema_name,
+      p_relation_name,
+      role_name
+    );
+  END LOOP;
+END;
+$$;
+-- Helper for privilege revoking on types (only schema owner can call)
+CREATE OR REPLACE PROCEDURE rxdb_base.revoke_all_type_grants(
+  p_schema_name varchar,
+  p_type_name varchar
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  role_name text;
+BEGIN
+  FOR role_name IN
+    SELECT DISTINCT
+      CASE
+        WHEN x.grantee = 0 THEN 'PUBLIC'
+        ELSE r.rolname
+      END
+    FROM pg_type t
+    JOIN pg_namespace n
+      ON n.oid = t.typnamespace
+    CROSS JOIN LATERAL aclexplode(t.typacl) x
+    LEFT JOIN pg_roles r
+      ON r.oid = x.grantee
+    WHERE n.nspname = p_schema_name
+      AND t.typname = p_type_name
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL ON TYPE %I.%I FROM %I',
+      p_schema_name,
+      p_type_name,
+      role_name
+    );
+  END LOOP;
+END;
+$$;
+-- Helper for privilege revoking on routines (only schema owner can call)
+CREATE OR REPLACE PROCEDURE rxdb_base.revoke_all_routine_grants(
+  p_routine_oid oid
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  role_name text;
+  routine_sig text;
+BEGIN
+  SELECT p.oid::regprocedure::text
+  INTO routine_sig
+  FROM pg_proc p
+  WHERE p.oid = p_routine_oid;
+
+  FOR role_name IN
+    SELECT DISTINCT
+      CASE
+        WHEN x.grantee = 0 THEN 'PUBLIC'
+        ELSE r.rolname
+      END
+    FROM pg_proc p
+    CROSS JOIN LATERAL aclexplode(p.proacl) x
+    LEFT JOIN pg_roles r
+      ON r.oid = x.grantee
+    WHERE p.oid = p_routine_oid
+  LOOP
+    EXECUTE
+      'REVOKE ALL ON ROUTINE '
+      || routine_sig
+      || ' FROM '
+      || quote_ident(role_name);
+  END LOOP;
+END;
+$$;
+-- Helper for privilege revoking on default (only schema owner can call)
+CREATE OR REPLACE PROCEDURE rxdb_base.revoke_all_default_grants(
+  p_owner varchar,
+  p_schema varchar,
+  p_object_type varchar
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  role_name text;
+  current_acl aclitem[];
+BEGIN
+  SELECT d.defaclacl
+  INTO current_acl
+  FROM pg_default_acl d
+  JOIN pg_roles r
+    ON r.oid = d.defaclrole
+  LEFT JOIN pg_namespace n
+    ON n.oid = d.defaclnamespace
+  WHERE r.rolname = p_owner
+    AND n.nspname = p_schema
+    AND CASE p_object_type
+      WHEN 'TABLES' THEN 'r'
+      WHEN 'SEQUENCES' THEN 'S'
+      WHEN 'ROUTINES' THEN 'f'
+      WHEN 'TYPES' THEN 'T'
+    END = d.defaclobjtype;
+
+  IF current_acl IS NULL THEN
+    RETURN;
+  END IF;
+
+  FOR role_name IN
+    SELECT DISTINCT
+      CASE
+        WHEN x.grantee = 0 THEN 'PUBLIC'
+        ELSE r.rolname
+      END
+    FROM aclexplode(current_acl) x
+    LEFT JOIN pg_roles r
+      ON r.oid = x.grantee
+  LOOP
+    EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I REVOKE ALL ON %s FROM %I',
+      p_owner,
+      p_schema,
+      p_object_type,
+      role_name
+    );
+  END LOOP;
 END;
 $$;
 
@@ -736,6 +922,12 @@ DECLARE
   role_name TEXT;
   privileges JSONB;
   privilege TEXT;
+
+  object_type TEXT;
+  object_acl JSONB;
+  object_owner TEXT;
+  object_schema TEXT;
+  sql_object TEXT;
 BEGIN
   -- Check whether schema exists
   IF NOT EXISTS (
@@ -748,8 +940,8 @@ BEGIN
   schema_acl := schema_permissions->'schema'->'acl';
 
   IF schema_acl IS NOT NULL THEN
-    -- reset usage/create for safety
-    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', domain_name);
+    -- revoke all from everyone, not just public
+    CALL rxdb_base.revoke_all_schema_grants(domain_name);
 
     FOR role_name, privileges IN
       SELECT * FROM jsonb_each(schema_acl)
@@ -766,7 +958,14 @@ BEGIN
         );
       END LOOP;
     END LOOP;
-    -- TODO owner
+  END IF;
+  -- Schema owner
+  IF schema_permissions->'schema' ? 'owner' THEN
+    EXECUTE format(
+      'ALTER SCHEMA %I OWNER TO %I',
+      domain_name,
+      schema_permissions->'schema'->>'owner'
+    );
   END IF;
 
   -- Set table-level privileges
@@ -787,9 +986,8 @@ BEGIN
         CONTINUE;
       END IF;
 
-      -- clear dangerous defaults
-      EXECUTE format(
-        'REVOKE ALL ON TABLE %I.%I FROM PUBLIC',
+      -- TODO revoke all from everyone, not just public
+      CALL rxdb_base.revoke_all_relation_grants(
         domain_name,
         rel_name
       );
@@ -811,8 +1009,15 @@ BEGIN
           );
         END LOOP;
       END LOOP;
-      -- TODO owner
-
+      -- Table owner
+      IF rel_acl ? 'owner' THEN
+        EXECUTE format(
+          'ALTER TABLE %I.%I OWNER TO %I',
+          domain_name,
+          rel_name,
+          rel_acl->>'owner'
+        );
+      END IF;
     END LOOP;
   END IF;
 
@@ -824,8 +1029,10 @@ BEGIN
       SELECT * FROM jsonb_each(routines_acl)
     LOOP
 
-      -- revoke all first
-      EXECUTE format('REVOKE ALL ON FUNCTION %I FROM PUBLIC', routine_sig);
+      -- revoke all from everyone, not just public
+      CALL rxdb_base.revoke_all_routine_grants(
+        routine_oid
+      );
 
       FOR role_name, privileges IN
         SELECT * FROM jsonb_each(routine_acl->'acl')
@@ -835,12 +1042,19 @@ BEGIN
         LOOP
           privilege := rxdb_base.assert_valid_privilege(privilege, 'function');
           EXECUTE format(
-            'GRANT %I ON FUNCTION %I TO %I', -- TODO it assumes all routines are functions?
+            'GRANT %I ON ROUTINE %I TO %I',
             privilege, routine_sig, role_name
           );
         END LOOP;
       END LOOP;
-      -- TODO owner
+      -- Routine owner
+      IF routine_acl ? 'owner' THEN
+        EXECUTE format(
+          'ALTER ROUTINE %I OWNER TO %I',
+          routine_sig,
+          routine_acl->>'owner'
+        );
+      END IF;
 
     END LOOP;
   END IF;
@@ -853,7 +1067,11 @@ BEGIN
       SELECT * FROM jsonb_each(types_acl)
     LOOP
 
-      EXECUTE format('REVOKE ALL ON TYPE %I.%I FROM PUBLIC', domain_name, type_name);
+      -- revoke all from everyone, not just public
+      CALL rxdb_base.revoke_all_type_grants(
+        domain_name,
+        type_name
+      );
 
       FOR role_name, privileges IN
         SELECT * FROM jsonb_each(type_acl->'acl')
@@ -868,7 +1086,15 @@ BEGIN
           );
         END LOOP;
       END LOOP;
-      -- TODO owner
+      -- Type owner
+      IF type_acl ? 'owner' THEN
+        EXECUTE format(
+          'ALTER TYPE %I.%I OWNER TO %I',
+          domain_name,
+          type_name,
+          type_acl->>'owner'
+        );
+      END IF;
 
     END LOOP;
   END IF;
@@ -877,23 +1103,64 @@ BEGIN
   defaults_acl := schema_permissions->'default_privileges';
 
   IF defaults_acl IS NOT NULL THEN
-    FOR role_name, privileges IN
+    FOR object_type, object_acl IN
       SELECT * FROM jsonb_each(defaults_acl)
     LOOP
-      FOR privilege IN
-        SELECT jsonb_array_elements_text(privileges)
+
+      object_owner  := object_acl->>'owner';
+      object_schema := object_acl->>'schema';
+
+      CASE object_type
+        WHEN 'tables' THEN
+          sql_object := 'TABLES';
+
+        WHEN 'sequences' THEN
+          sql_object := 'SEQUENCES';
+
+        WHEN 'routines' THEN
+          sql_object := 'ROUTINES';
+
+        WHEN 'types' THEN
+          sql_object := 'TYPES';
+
+        ELSE
+          CONTINUE;
+      END CASE;
+
+      -- revoke all from everyone, not just public
+      CALL rxdb_base.revoke_all_default_grants(
+        object_owner,
+        object_schema,
+        sql_object
+      );
+
+      -- Grant configured privileges
+      FOR role_name, privileges IN
+        SELECT * FROM jsonb_each(object_acl->'acl')
       LOOP
-        privilege := rxdb_base.assert_valid_privilege(privilege, 'default');
-        EXECUTE format(
-          'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I %I', -- TODO wrong syntax, syntax needs to be per case
-          role_name,
-          domain_name,
-          privilege
-        );
+
+        FOR privilege IN
+          SELECT jsonb_array_elements_text(privileges)
+        LOOP
+
+          privilege := rxdb_base.assert_valid_privilege(
+            privilege,
+            'default'
+          );
+
+          EXECUTE format(
+            'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT %I ON %I TO %I',
+            object_owner,
+            object_schema,
+            privilege,
+            sql_object,
+            role_name
+          );
+
+        END LOOP;
       END LOOP;
     END LOOP;
   END IF;
-  -- TODO owner
 
 END;
 $$;
