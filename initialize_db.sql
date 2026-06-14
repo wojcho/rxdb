@@ -317,6 +317,10 @@ $$;
 
 -- Helper functions for Select Permissions in a Schema
 
+-- {
+--   "postgres": ["DELETE","INSERT","MAINTAIN","REFERENCES","SELECT","TRIGGER","TRUNCATE","UPDATE"],
+--   "PUBLIC": ["INSERT","SELECT"]
+-- }
 CREATE OR REPLACE FUNCTION rxdb_base.acl_to_json(
   acl aclitem[]
 )
@@ -324,27 +328,20 @@ RETURNS jsonb
 LANGUAGE sql
 STABLE
 AS $$
-  SELECT COALESCE(
-    jsonb_agg(
-      jsonb_build_object(
-        'grantor',
-          COALESCE(grantor_role.rolname, x.grantor::text),
-        'grantee',
-          CASE
-            WHEN x.grantee = 0 THEN 'PUBLIC'
-            ELSE grantee_role.rolname
-          END,
-        'privilege', x.privilege_type,
-        'grantable', x.is_grantable
-      )
-    ),
-    '[]'::jsonb
+  WITH exploded AS (
+    SELECT
+      CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE grantee_role.rolname END AS grantee,
+      x.privilege_type AS privilege
+    FROM aclexplode(acl) x
+    LEFT JOIN pg_roles grantee_role ON grantee_role.oid = x.grantee
+  ),
+  grouped AS (
+    SELECT grantee, jsonb_agg(privilege ORDER BY privilege) AS privileges
+    FROM exploded
+    GROUP BY grantee
   )
-  FROM aclexplode(acl) x
-  LEFT JOIN pg_roles grantor_role
-    ON grantor_role.oid = x.grantor
-  LEFT JOIN pg_roles grantee_role
-    ON grantee_role.oid = x.grantee;
+  SELECT COALESCE(jsonb_object_agg(grantee, privileges), '{}'::jsonb)
+  FROM grouped;
 $$;
 
 -- TODO default ACLs
@@ -352,18 +349,18 @@ $$;
 -- {
 --   "schema": {
 --     "name": "rxdb_base",
---     "acl": [...]
+--     "acl": {...}
 --   },
 --   "relations": {
 --     "users": {
 --       "kind": "r",
 --       "owner": "rxdb_admin",
---       "acl": [...]
+--       "acl": {...}
 --     },
 --     "users_id_seq": {
 --       "kind": "S",
 --       "owner": "rxdb_admin",
---       "acl": [...]
+--       "acl": {...}
 --     }
 --   },
 --   "routines": {
@@ -372,14 +369,14 @@ $$;
 --       "kind": "f",
 --       "owner": "rxdb_admin",
 --       "language": "plpgsql",
---       "acl": [...]
+--       "acl": {...}
 --     }
 --   },
 --   "types": {
 --     "user_status": {
 --       "kind": "e",
 --       "owner": "rxdb_admin",
---       "acl": [...]
+--       "acl": {...}
 --     }
 --   },
 --   "default_privileges": {
@@ -393,7 +390,6 @@ $$;
 --     }
 --   }
 -- }
-
 
 -- Select Permissions in a Schema, used for reflection purposes (anyone with access to schema can run)
 CREATE OR REPLACE FUNCTION rxdb_base.select_schema_permissions(
@@ -439,7 +435,18 @@ BEGIN
   FROM pg_class c
   JOIN pg_roles owner_role
     ON owner_role.oid = c.relowner
-  WHERE c.relnamespace = schema_oid;
+  WHERE c.relnamespace = schema_oid
+  AND NOT (
+    c.relkind = 'i'
+    AND EXISTS (
+      SELECT 1
+      FROM pg_index i
+      JOIN pg_constraint con
+        ON con.conindid = i.indexrelid
+      WHERE i.indexrelid = c.oid
+        AND con.contype = 'p'
+    )
+  );
 
   -- Routines
   SELECT COALESCE(
@@ -486,7 +493,17 @@ BEGIN
     ON n.oid = t.typnamespace
   JOIN pg_roles r
     ON r.oid = t.typowner
-  WHERE t.typnamespace = schema_oid;
+  WHERE t.typnamespace = schema_oid
+    AND t.typrelid = 0 -- remove automatically generated types of tables
+    AND NOT ( -- remove automatically generated array types of tables
+      t.typelem != 0
+      AND EXISTS (
+        SELECT 1
+        FROM pg_type base
+        WHERE base.oid = t.typelem
+          AND base.typnamespace = schema_oid
+      )
+    );
 
   -- Default
   SELECT COALESCE(
