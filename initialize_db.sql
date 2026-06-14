@@ -628,52 +628,224 @@ BEGIN
 END;
 $$;
 
--- Create Custom Domain/Schema (Schema and Log Table) (anoyone can run)
--- CREATE OR REPLACE PROCEDURE rxdb_base.create_domain (
---   domain_name VARCHAR,
---   schema_permissions JSONB
--- )
--- LANGUAGE plpgsql
--- AS $$
--- BEGIN
---   -- TODO parse schema_permissions
---   EXECUTE format(
---     'CREATE SCHEMA IF NOT EXISTS %I',
---     domain_name
---   );
---   EXECUTE format(
---     '
---     CREATE TABLE IF NOT EXISTS %I.log_version (
---       version_id VARCHAR(1024) PRIMARY KEY,
---       operation JSONB,
---       CONSTRAINT fk_log_version_version_%I
---         FOREIGN KEY (version_id)
---         REFERENCES rxdb_base.version (version_id)
---         ON UPDATE RESTRICT -- UPDATE, DELETE are anyway forbidden
---         ON DELETE RESTRICT
---     )',
---     domain_name
---   );
---   CALL rxdb_base.update_domain_permissions(
---     domain_name,
---     schema_permissions
---   );
--- END;
--- $$;
+-- Create Custom Domain/Schema (Schema and Log Table) (only schema owner run)
+CREATE OR REPLACE PROCEDURE rxdb_base.create_domain (
+  domain_name VARCHAR,
+  schema_permissions JSONB DEFAULT NULL -- similar to values returned by rxdb_base.select_schema_permissions
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Create schema
+  EXECUTE format(
+    'CREATE SCHEMA IF NOT EXISTS %I',
+    domain_name
+  );
+
+  -- Create log table within schema
+  EXECUTE format(
+    '
+    CREATE TABLE IF NOT EXISTS %I.log_version (
+      version_id VARCHAR(1024) PRIMARY KEY,
+      operation JSONB,
+      CONSTRAINT fk_log_version_version_%I
+        FOREIGN KEY (version_id)
+        REFERENCES rxdb_base.version (version_id)
+        ON UPDATE RESTRICT
+        ON DELETE RESTRICT
+    )',
+    domain_name,
+    domain_name
+  );
+
+  -- Apply permissions if provided
+  IF schema_permissions IS NOT NULL THEN
+    CALL rxdb_base.update_domain_permissions(domain_name, schema_permissions);
+  END IF;
+
+END;
+$$;
 
 -- Update Custom Domain/Schema Permissions (anyone with schema permission editing permission can run)
--- CREATE OR REPLACE PROCEDURE rxdb_base.update_domain_permissions (
---   domain_name VARCHAR,
---   schema_permissions JSONB
--- )
--- LANGUAGE plpgsql
--- AS $$
--- BEGIN
---   -- TODO
---   -- revoke all permissions
---   -- grant new permissions
--- END;
--- $$;
+CREATE OR REPLACE PROCEDURE rxdb_base.update_domain_permissions (
+  domain_name VARCHAR,
+  schema_permissions JSONB -- similar to values returned by rxdb_base.select_schema_permissions
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  schema_acl JSONB;
+  relations_acl JSONB;
+
+  routines_acl JSONB;
+  types_acl JSONB;
+  defaults_acl JSONB;
+
+  rel_name TEXT;
+  rel_acl JSONB;
+
+  routine_sig TEXT;
+  routine_acl JSONB;
+
+  type_name TEXT;
+  type_acl JSONB;
+
+  role_name TEXT;
+  privileges JSONB;
+  privilege TEXT;
+BEGIN
+  -- Check whether schema exists
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_namespace WHERE nspname = domain_name
+  ) THEN
+    RAISE EXCEPTION 'Schema "%" does not exist', domain_name;
+  END IF;
+
+  -- Set schema-level privileges
+  schema_acl := schema_permissions->'schema'->'acl';
+
+  IF schema_acl IS NOT NULL THEN
+    -- reset usage/create for safety
+    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', domain_name);
+
+    FOR role_name, privileges IN
+      SELECT * FROM jsonb_each(schema_acl)
+    LOOP
+      FOR privilege IN
+        SELECT jsonb_array_elements_text(privileges)
+      LOOP
+        EXECUTE format(
+          'GRANT %s ON SCHEMA %I TO %I',
+          privilege,
+          domain_name,
+          role_name
+        );
+      END LOOP;
+    END LOOP;
+  END IF;
+
+  -- Set table-level privileges
+  relations_acl := schema_permissions->'relations';
+
+  IF relations_acl IS NOT NULL THEN
+    FOR rel_name, rel_acl IN
+      SELECT * FROM jsonb_each(relations_acl)
+    LOOP
+
+      -- ensure that table exists
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = domain_name
+          AND table_name = rel_name
+      ) THEN
+        CONTINUE;
+      END IF;
+
+      -- clear dangerous defaults
+      EXECUTE format(
+        'REVOKE ALL ON TABLE %I.%I FROM PUBLIC',
+        domain_name,
+        rel_name
+      );
+
+      -- grant per-role privileges
+      FOR role_name, privileges IN
+        SELECT * FROM jsonb_each(rel_acl->'acl')
+      LOOP
+        FOR privilege IN
+          SELECT jsonb_array_elements_text(privileges)
+        LOOP
+          EXECUTE format(
+            'GRANT %s ON TABLE %I.%I TO %I',
+            privilege,
+            domain_name,
+            rel_name,
+            role_name
+          );
+        END LOOP;
+      END LOOP;
+
+    END LOOP;
+  END IF;
+
+  -- Set routine-level privileges
+  routines_acl := schema_permissions->'routines';
+
+  IF routines_acl IS NOT NULL THEN
+    FOR routine_sig, routine_acl IN
+      SELECT * FROM jsonb_each(routines_acl)
+    LOOP
+
+      -- revoke all first
+      EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', routine_sig);
+
+      FOR role_name, privileges IN
+        SELECT * FROM jsonb_each(routine_acl->'acl')
+      LOOP
+        FOR privilege IN
+          SELECT jsonb_array_elements_text(privileges)
+        LOOP
+          EXECUTE format(
+            'GRANT %s ON FUNCTION %s TO %I',
+            privilege, routine_sig, role_name
+          );
+        END LOOP;
+      END LOOP;
+
+    END LOOP;
+  END IF;
+
+  -- Set type-level privileges
+  types_acl := schema_permissions->'types';
+
+  IF types_acl IS NOT NULL THEN
+    FOR type_name, type_acl IN
+      SELECT * FROM jsonb_each(types_acl)
+    LOOP
+
+      EXECUTE format('REVOKE ALL ON TYPE %I.%I FROM PUBLIC', domain_name, type_name);
+
+      FOR role_name, privileges IN
+        SELECT * FROM jsonb_each(type_acl->'acl')
+      LOOP
+        FOR privilege IN
+          SELECT jsonb_array_elements_text(privileges)
+        LOOP
+          EXECUTE format(
+            'GRANT %s ON TYPE %I.%I TO %I',
+            privilege, domain_name, type_name, role_name
+          );
+        END LOOP;
+      END LOOP;
+
+    END LOOP;
+  END IF;
+
+  -- Set default schema-level privileges
+  defaults_acl := schema_permissions->'default_privileges';
+
+  IF defaults_acl IS NOT NULL THEN
+    FOR role_name, privileges IN
+      SELECT * FROM jsonb_each(defaults_acl)
+    LOOP
+      FOR privilege IN
+        SELECT jsonb_array_elements_text(privileges)
+      LOOP
+        EXECUTE format(
+          'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I %s',
+          role_name,
+          domain_name,
+          privilege
+        );
+      END LOOP;
+    END LOOP;
+  END IF;
+
+END;
+$$;
 
 -- Tables/Types
 
@@ -876,8 +1048,6 @@ BEGIN
   RETURN COALESCE(retval, '{}'::jsonb);
 END;
 $$;
-
-SELECT rxdb_base.select_table_definition('rxdb_base', 'object');
 
 -- Create Custom Type/Table (anyone with access to schema can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
