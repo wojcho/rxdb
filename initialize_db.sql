@@ -361,38 +361,31 @@ $$;
 --   "routines": {
 --     "rxdb_base.acl_to_json(aclitem[])": {
 --       "acl": {},
---       "kind": "f",
---       "name": "acl_to_json",
---       "owner": "postgres",
---       "language": "sql"
+--       "owner": "postgres"
 --     },
 --     "rxdb_base.current_user_object_id()": {
 --       "acl": {},
---       "kind": "f",
---       "name": "current_user_object_id",
---       "owner": "postgres",
---       "language": "plpgsql"
+--       "owner": "postgres"
 --     },
 --     "rxdb_base.select_accessible_schemas()": {
 --       "acl": {},
---       "kind": "f",
---       "name": "select_accessible_schemas",
---       "owner": "postgres",
---       "language": "plpgsql"
+--       "owner": "postgres"
 --     },
 --     "rxdb_base.insert_log(character varying,jsonb)": {
 --       "acl": {},
---       "kind": "p",
---       "name": "insert_log",
---       "owner": "postgres",
---       "language": "plpgsql"
+--       "owner": "postgres"
 --     },
 --     "rxdb_base.select_schema_permissions(character varying)": {
 --       "acl": {},
---       "kind": "f",
---       "name": "select_schema_permissions",
---       "owner": "postgres",
---       "language": "plpgsql"
+--       "owner": "postgres"
+--     },
+--     "rxdb_base.select_table_names_in_schema(character varying)": {
+--       "acl": {},
+--       "owner": "postgres"
+--     },
+--     "rxdb_base.select_table_definition(character varying,character varying)": {
+--       "acl": {},
+--       "owner": "postgres"
 --     }
 --   },
 --   "relations": {
@@ -413,7 +406,6 @@ $$;
 --           "UPDATE"
 --         ]
 --       },
---       "kind": "r",
 --       "owner": "postgres"
 --     },
 --     "version": {
@@ -433,7 +425,6 @@ $$;
 --           "UPDATE"
 --         ]
 --       },
---       "kind": "r",
 --       "owner": "postgres"
 --     },
 --     "log_version": {
@@ -453,12 +444,11 @@ $$;
 --           "UPDATE"
 --         ]
 --       },
---       "kind": "r",
 --       "owner": "postgres"
 --     }
 --   },
---   "default_privileges": [
---     {
+--   "default_privileges": {
+--     "r": {
 --       "acl": {
 --         "PUBLIC": [
 --           "INSERT",
@@ -466,10 +456,9 @@ $$;
 --         ]
 --       },
 --       "owner": "rxdb_admin",
---       "schema": "rxdb_base",
---       "object_type": "r"
+--       "schema": "rxdb_base"
 --     }
---   ]
+--   }
 -- }
 
 -- Select Permissions in a Schema, used for reflection purposes (anyone with access to schema can run)
@@ -504,7 +493,6 @@ BEGIN
     jsonb_object_agg(
       c.relname,
       jsonb_build_object(
-        'kind', c.relkind,
         'owner', owner_role.rolname,
         'acl', rxdb_base.acl_to_json(c.relacl)
       )
@@ -534,12 +522,8 @@ BEGIN
     jsonb_object_agg(
       (p.oid::regprocedure::text),
       jsonb_build_object(
-        'name', p.proname,
-        'kind', p.prokind,
         'owner', r.rolname,
-        'acl', rxdb_base.acl_to_json(p.proacl),
-        'language',
-          l.lanname
+        'acl', rxdb_base.acl_to_json(p.proacl)
       )
       ORDER BY (p.oid::regprocedure::text)
     ),
@@ -560,7 +544,6 @@ BEGIN
     jsonb_object_agg(
       t.typname,
       jsonb_build_object(
-        'kind', t.typtype,
         'owner', r.rolname,
         'acl', rxdb_base.acl_to_json(t.typacl)
       )
@@ -588,7 +571,8 @@ BEGIN
 
   -- Default
   SELECT COALESCE(
-    jsonb_agg(
+    jsonb_object_agg(
+      d.defaclobjtype,
       jsonb_build_object(
         'owner', owner_role.rolname,
         'schema',
@@ -596,7 +580,6 @@ BEGIN
             WHEN d.defaclnamespace IS NULL THEN NULL
             ELSE ns.nspname
           END,
-        'object_type', d.defaclobjtype,
         'acl', rxdb_base.acl_to_json(d.defaclacl)
       )
       ORDER BY owner_role.rolname, d.defaclobjtype
@@ -925,3 +908,5 @@ GRANT CREATE ON DATABASE postgres TO PUBLIC;
 -- Custom Schemas, Tables, Versions
 -- =====================================================
 -- TODO
+
+SELECT rxdb_base.select_schema_permissions('rxdb_base');
