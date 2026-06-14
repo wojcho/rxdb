@@ -1189,53 +1189,45 @@ $$;
 -- {
 --   "columns": [
 --     {
---       "name": "object_id",
---       "type": "uuid",
---       "default": "gen_random_uuid()",
---       "nullable": false
---     },
---     {
---       "name": "created_at",
---       "type": "timestamp without time zone",
---       "default": "now()",
---       "nullable": false
---     },
---     {
---       "name": "creating_user_object_id",
---       "type": "uuid",
+--       "name": "version_id",
+--       "type": "character varying",
 --       "default": null,
 --       "nullable": false
+--     },
+--     {
+--       "name": "operation",
+--       "type": "jsonb",
+--       "default": null,
+--       "nullable": true
 --     }
 --   ],
---   "indexes": [
---     {
---       "name": "rxdb_base.object_pkey",
+--   "indexes": {
+--     "rxdb_base.log_version_pkey": {
 --       "unique": true,
 --       "columns": [
---         "object_id"
+--         "version_id"
 --       ]
 --     }
---   ],
+--   },
 --   "primary_key": [
---     "object_id"
+--     "version_id"
 --   ],
---   "foreign_keys": [
---     {
---       "name": "fk_object_creating_user",
+--   "foreign_keys": {
+--     "fk_log_version_version_rxdb_base": {
 --       "columns": [
---         "creating_user_object_id"
+--         "version_id"
 --       ],
 --       "on_delete": "RESTRICT",
 --       "on_update": "RESTRICT",
 --       "references": {
---         "table": "object",
+--         "table": "version",
 --         "schema": "rxdb_base",
 --         "columns": [
---           "object_id"
+--           "version_id"
 --         ]
 --       }
 --     }
---   ]
+--   }
 -- }
 
 -- Select Type/Table Definition (anyone with access to schema can run)
@@ -1285,10 +1277,9 @@ BEGIN
   ),
 
   fks AS (
-    SELECT jsonb_agg(
+    SELECT jsonb_object_agg(
+      c.conname,
       jsonb_build_object(
-        'name', c.conname,
-
         'columns',
           (SELECT jsonb_agg(a1.attname ORDER BY k1.n)
            FROM unnest(c.conkey) WITH ORDINALITY AS k1(attnum, n)
@@ -1334,9 +1325,9 @@ BEGIN
   ),
 
   indexes AS (
-    SELECT jsonb_agg(
+    SELECT jsonb_object_agg(
+      i.indexrelid::regclass::text,
       jsonb_build_object(
-        'name', i.indexrelid::regclass::text,
         'unique', i.indisunique,
 
         'columns',
@@ -1366,25 +1357,142 @@ END;
 $$;
 
 -- Create Custom Type/Table (anyone with access to schema can run)
--- CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
---   domain_name VARCHAR,
---   type_name VARCHAR,
---   table_definition JSONB -- as returned by table_definition
--- )
--- LANGUAGE plpgsql
--- AS $$
--- BEGIN
---   -- TODO
---   CREATE TABLE domain_name.type_name ();
---   -- TODO later after getting it to work, it could also create a function view with joined rxdb_base.object, rxdb_base.version, domain_name.type_name to show latest versions, but that is for later
--- END;
--- $$;
+CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
+  domain_name VARCHAR,
+  type_name VARCHAR,
+  table_definition JSONB -- as returned by rxdb_base.select_table_definition
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- IF NOT rxdb_base.is_valid_table_definition(domain_name, type_name, table_definition) THEN ... END IF;
+  -- TODO create a new table, with all specified columns, indexes, primary keys, constraints
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION rxdb_base.is_valid_table_definition(
+  domain_name VARCHAR,
+  type_name VARCHAR,
+  table_definition JSONB -- as returned by rxdb_base.select_table_definition
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- TODO check that table_definition has required column
+  -- "columns": [
+  --   {
+  --     "name": "version_id",
+  --     "type": "character varying",
+  --     "default": null,
+  --     "nullable": false
+  --   },
+  --   <... any other columns can or might not appear>
+  -- ]
+
+  -- TODO check that table_definition has appropriate indexes
+  -- "indexes": {
+  --   "<domain_name>.<type_name>": {
+  --     "unique": true,
+  --     "columns": [
+  --       "version_id"
+  --     ]
+  --   },
+  --   <... any other indexes can or might not appear>
+  -- },
+
+  -- TODO check that table_definition has
+  -- "primary_key": [
+  --   "version_id"
+  -- ]
+
+  -- TODO check that table_definition has
+  -- "foreign_keys": {
+  --   "fk_log_version_version_rxdb_base": {
+  --     "columns": [
+  --       "version_id"
+  --     ],
+  --     "on_delete": "RESTRICT",
+  --     "on_update": "RESTRICT",
+  --     "references": {
+  --       "table": "version",
+  --       "schema": "rxdb_base",
+  --       "columns": [
+  --         "version_id"
+  --       ]
+  --     }
+  --   },
+  --   <... any other foreign keys can or might not appear>
+  -- }
+END;
+$$;
+
+-- Pre-fill
+CREATE OR REPLACE FUNCTION rxdb_base.prefill_table_definition(
+  domain_name VARCHAR,
+  type_name VARCHAR,
+  table_definition JSONB -- as returned by rxdb_base.select_table_definition
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  retval JSONB;
+BEGIN
+  -- TODO add the required column representations under column keys
+  -- "columns": [
+  --   {
+  --     "name": "version_id",
+  --     "type": "character varying",
+  --     "default": null,
+  --     "nullable": false
+  --   },
+  --   <... any other columns can or might not appear>
+  -- ]
+
+  -- TODO add the required index, retain other indexes
+  -- "indexes": {
+  --   "<domain_name>.<type_name>": {
+  --     "unique": true,
+  --     "columns": [
+  --       "version_id"
+  --     ]
+  --   },
+  --   <... any other indexes can or might not appear>
+  -- },
+
+  -- TODO add the required primary key
+  -- "primary_key": [
+  --   "version_id"
+  -- ]
+
+  -- TODO add the required foreign keys, retain other foreign keys
+  -- "foreign_keys": {
+  --   "fk_log_version_version_rxdb_base": {
+  --     "columns": [
+  --       "version_id"
+  --     ],
+  --     "on_delete": "RESTRICT",
+  --     "on_update": "RESTRICT",
+  --     "references": {
+  --       "table": "version",
+  --       "schema": "rxdb_base",
+  --       "columns": [
+  --         "version_id"
+  --       ]
+  --     }
+  --   },
+  --   <... any other foreign keys can or might not appear>
+  -- }
+
+  -- TODO if required fields are not added, add them
+END;
+$$;
 
 -- Insert into Custom Type/Table (anyone with insert access to that table can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
---   domain_name VARCHAR,
---   type_name VARCHAR,
---   new_data JSONB
+--   domain_name VARCHAR, -- schema name
+--   type_name VARCHAR, -- table name
+--   new_data JSONB -- {"columns": ["col0", "col1", ...], "data": [["val00", "val01", ...], ["val10", "val11", ...]]}
 -- )
 -- LANGUAGE plpgsql
 -- AS $$
