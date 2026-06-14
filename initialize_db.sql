@@ -1266,8 +1266,6 @@ BEGIN
         'name', column_name,
         'type', data_type,
         'nullable', (is_nullable = 'YES'),
-
-        -- structured default instead of raw string only
         'default',
         column_default
       )
