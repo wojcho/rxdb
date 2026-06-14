@@ -1745,8 +1745,13 @@ CREATE OR REPLACE FUNCTION rxdb_base.is_valid_custom_mutate_payload(
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  wrong_columns VARCHAR[];
+  column_count INT;
+  row_index INT;
+  row_length INT;
+  row JSONB;
 BEGIN
-  -- TODO
   -- Validate new_data
   IF new_data IS NULL THEN
     RAISE EXCEPTION 'new_data cannot be null';
@@ -1763,6 +1768,9 @@ BEGIN
   IF jsonb_typeof(new_data->'data') <> 'array' THEN
     RAISE EXCEPTION '"data" must be an array';
   END IF;
+  IF jsonb_array_length(new_data->'data') = 0 THEN
+    RAISE EXCEPTION '"data" cannot be empty';
+  END IF;
   column_count := jsonb_array_length(new_data->'columns');
   IF column_count = 0 THEN
     RAISE EXCEPTION '"columns" cannot be empty';
@@ -1777,6 +1785,13 @@ BEGIN
     ) dup
   ) THEN
     RAISE EXCEPTION 'Duplicate column names are not allowed';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(new_data->'columns') c
+    WHERE jsonb_typeof(c) <> 'string'
+  ) THEN
+    RAISE EXCEPTION 'All column names must be strings';
   END IF;
 
   -- check whether all arrays in "data" have same length, consistent with amount of columns
@@ -1832,9 +1847,11 @@ BEGIN
       type_name,
       array_to_string(wrong_columns, ', ');
   END IF;
+
+  -- If not raised before then it is correct
+  RETURN TRUE;
 END;
 $$;
-
 
 -- Insert into Custom Type/Table (anyone with insert access to table domain_name.type_name can run)
 CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
@@ -1844,32 +1861,37 @@ CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
 )
 LANGUAGE plpgsql
 AS $$
-DECLARE
-  wrong_columns VARCHAR[];
-  new_object_id UUID;
-  current_creating_user_object_id UUID;
-  cols VARCHAR;
-  vals VARCHAR;
-  row JSONB;
-  row_vals VARCHAR;
-  i INT;
 BEGIN
-  -- Validate
-  -- TODO rxdb_base.is_valid_custom_mutate_payload
+  -- Validate new_data
+  PERFORM rxdb_base.is_valid_custom_mutate_payload(
+    domain_name,
+    type_name,
+    new_data
+  );
 
   -- Find object ID of current user
   current_creating_user_object_id := rxdb_base.current_user_object_id();
 
-  -- Insert len(new_data.data) amount of Objects
-  -- TODO run and gather IDs
-  INSERT INTO rxdb_base.object(
-    creating_user_object_id
-  ) VALUES (
-    current_creating_user_object_id
-  ) RETURNING object_id
-    INTO new_object_id;
+  -- Create one object for each incoming row (objects here are just vessels for versions, their identity becomes meaningful only afterwards)
+  WITH inserted_objects AS (
+    INSERT INTO rxdb_base.object (
+      creating_user_object_id
+    )
+    SELECT current_creating_user_object_id
+    FROM generate_series(1, row_count)
+    RETURNING object_id
+  )
+  SELECT array_agg(object_id ORDER BY object_id)
+  INTO target_object_ids
+  FROM inserted_objects;
   
-  -- rxdb_base.update_custom run with gathered IDs
+  -- Delegate version creation and custom-table insert to rxdb_base.update_custom
+  CALL rxdb_base.update_custom(
+    domain_name,
+    type_name,
+    target_object_ids,
+    new_data
+  );
 END;
 $$;
 
@@ -1883,9 +1905,21 @@ CREATE OR REPLACE PROCEDURE rxdb_base.update_custom(
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  -- Validate
-  -- TODO rxdb_base.is_valid_custom_mutate_payload
-  -- TODO validate that length(new_data.data) = length(target_object_ids)
+  -- Validate new_data
+  PERFORM rxdb_base.is_valid_custom_mutate_payload(
+    domain_name,
+    type_name,
+    new_data
+  );
+  -- validate that length(new_data.data) = length(target_object_ids)
+  IF jsonb_array_length(new_data->'data')
+   <> array_length(target_object_ids, 1)
+  THEN
+    RAISE EXCEPTION
+      'Expected % rows but received %',
+      array_length(target_object_ids, 1),
+      jsonb_array_length(new_data->'data');
+  END IF;
 
   -- Insert Version
   -- TODO if there is provided column "version_id", then for each of values in arrays from data array, using values at that column index, create new version ids
@@ -1928,6 +1962,10 @@ BEGIN
     ),
     ', '
   );
+
+  -- In all tables representing custom types, version_id column with type VARCHAR(1024) is mandatory
+  -- All custom tables should have one column defined the following way:
+  -- version_id VARCHAR(1024) PRIMARY KEY REFERENCES rxdb_base.version(version_id)
 
   -- iterate rows
   i := 0;
