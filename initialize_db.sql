@@ -628,7 +628,7 @@ BEGIN
 END;
 $$;
 
--- Create Custom Domain/Schema (Schema and Log Table) (only schema owner run)
+-- Create Custom Domain/Schema (Schema and Log Table) (anyone can run)
 CREATE OR REPLACE PROCEDURE rxdb_base.create_domain (
   domain_name VARCHAR,
   schema_permissions JSONB DEFAULT NULL -- similar to values returned by rxdb_base.select_schema_permissions
@@ -667,7 +667,48 @@ BEGIN
 END;
 $$;
 
--- Update Custom Domain/Schema Permissions (anyone with schema permission editing permission can run)
+-- Helper for privilege validity checking (anoyne can run)
+CREATE OR REPLACE FUNCTION rxdb_base.assert_valid_privilege(
+  privilege_name VARCHAR,
+  privilege_target VARCHAR
+) RETURNS VARCHAR
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  CASE privilege_target -- https://www.postgresql.org/docs/current/ddl-priv.html#PRIVILEGES-SUMMARY-TABLE
+    WHEN 'schema' THEN
+      IF privilege_name NOT IN ('USAGE', 'CREATE') THEN
+        RAISE EXCEPTION 'Invalid schema privilege: %', privilege_name;
+      END IF;
+
+    WHEN 'table' THEN
+      IF privilege_name NOT IN ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER') THEN
+        RAISE EXCEPTION 'Invalid table privilege: %', privilege_name;
+      END IF;
+
+    WHEN 'function' THEN
+      IF privilege_name NOT IN ('EXECUTE') THEN
+        RAISE EXCEPTION 'Invalid function privilege: %', privilege_name;
+      END IF;
+
+    WHEN 'type' THEN
+      IF privilege_name NOT IN ('USAGE') THEN
+        RAISE EXCEPTION 'Invalid type privilege: %', privilege_name;
+      END IF;
+
+    WHEN 'default' THEN
+      IF privilege_name NOT IN ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','EXECUTE') THEN
+        RAISE EXCEPTION 'Invalid default privilege: %', privilege_name;
+      END IF;
+    ELSE
+      RAISE EXCEPTION 'Unknown privilege context';
+  END CASE;
+
+  RETURN privilege_name;
+END;
+$$;
+
+-- Update Custom Domain/Schema Permissions (only schema owner run)
 CREATE OR REPLACE PROCEDURE rxdb_base.update_domain_permissions (
   domain_name VARCHAR,
   schema_permissions JSONB -- similar to values returned by rxdb_base.select_schema_permissions
@@ -716,14 +757,16 @@ BEGIN
       FOR privilege IN
         SELECT jsonb_array_elements_text(privileges)
       LOOP
+        privilege := rxdb_base.assert_valid_privilege(privilege, 'schema');
         EXECUTE format(
-          'GRANT %s ON SCHEMA %I TO %I',
+          'GRANT %I ON SCHEMA %I TO %I',
           privilege,
           domain_name,
           role_name
         );
       END LOOP;
     END LOOP;
+    -- TODO owner
   END IF;
 
   -- Set table-level privileges
@@ -758,8 +801,9 @@ BEGIN
         FOR privilege IN
           SELECT jsonb_array_elements_text(privileges)
         LOOP
+          privilege := rxdb_base.assert_valid_privilege(privilege, 'table');
           EXECUTE format(
-            'GRANT %s ON TABLE %I.%I TO %I',
+            'GRANT %I ON TABLE %I.%I TO %I',
             privilege,
             domain_name,
             rel_name,
@@ -767,6 +811,7 @@ BEGIN
           );
         END LOOP;
       END LOOP;
+      -- TODO owner
 
     END LOOP;
   END IF;
@@ -780,7 +825,7 @@ BEGIN
     LOOP
 
       -- revoke all first
-      EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', routine_sig);
+      EXECUTE format('REVOKE ALL ON FUNCTION %I FROM PUBLIC', routine_sig);
 
       FOR role_name, privileges IN
         SELECT * FROM jsonb_each(routine_acl->'acl')
@@ -788,12 +833,14 @@ BEGIN
         FOR privilege IN
           SELECT jsonb_array_elements_text(privileges)
         LOOP
+          privilege := rxdb_base.assert_valid_privilege(privilege, 'function');
           EXECUTE format(
-            'GRANT %s ON FUNCTION %s TO %I',
+            'GRANT %I ON FUNCTION %I TO %I', -- TODO it assumes all routines are functions?
             privilege, routine_sig, role_name
           );
         END LOOP;
       END LOOP;
+      -- TODO owner
 
     END LOOP;
   END IF;
@@ -814,12 +861,14 @@ BEGIN
         FOR privilege IN
           SELECT jsonb_array_elements_text(privileges)
         LOOP
+          privilege := rxdb_base.assert_valid_privilege(privilege, 'type');
           EXECUTE format(
-            'GRANT %s ON TYPE %I.%I TO %I',
+            'GRANT %I ON TYPE %I.%I TO %I',
             privilege, domain_name, type_name, role_name
           );
         END LOOP;
       END LOOP;
+      -- TODO owner
 
     END LOOP;
   END IF;
@@ -834,8 +883,9 @@ BEGIN
       FOR privilege IN
         SELECT jsonb_array_elements_text(privileges)
       LOOP
+        privilege := rxdb_base.assert_valid_privilege(privilege, 'default');
         EXECUTE format(
-          'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I %s',
+          'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I %I', -- TODO wrong syntax, syntax needs to be per case
           role_name,
           domain_name,
           privilege
@@ -843,6 +893,7 @@ BEGIN
       END LOOP;
     END LOOP;
   END IF;
+  -- TODO owner
 
 END;
 $$;
