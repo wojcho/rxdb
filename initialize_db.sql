@@ -1492,7 +1492,7 @@ BEGIN
     )
     AND (
       (c ? 'default') -- key must be present
-      AND (c->'default' IS NULL) -- value must be JSON null
+      AND (c->'default' = 'null'::jsonb) -- value must be JSON null
     )
   )
   INTO required_column_found;
@@ -1603,7 +1603,7 @@ DECLARE
   required_col JSONB := jsonb_build_object(
     'name', 'version_id',
     'type', 'character varying',
-    'default', NULL,
+    'default', 'null'::jsonb,
     'nullable', false
   );
   required_index_def JSONB := jsonb_build_object(
@@ -1640,8 +1640,8 @@ BEGIN
     SELECT 1 FROM jsonb_array_elements(cols) AS c
     WHERE c->>'name' = 'version_id'
   ) THEN
-    -- append required column
-    cols := cols || jsonb_build_array(required_col);
+    -- required column has to be first
+    cols := jsonb_build_array(required_col) || cols;
   ELSE
     -- replace existing element with merged version that ensures required properties
     cols := (
@@ -1722,6 +1722,55 @@ BEGIN
   RETURN retval;
 END;
 $$;
+
+SELECT rxdb_base.prefill_table_definition( 'rxdb_base', 'testing', $json$
+{
+  "columns": [
+    {
+      "name": "abc",
+      "type": "integer",
+      "default": null,
+      "nullable": false
+    }
+  ]
+}
+$json$::jsonb
+);
+
+SELECT rxdb_base.is_valid_table_definition(
+  'rxdb_base',
+  'testing',
+  (SELECT rxdb_base.prefill_table_definition(
+     'rxdb_base', 'testing',
+     $json$
+{
+  "columns": [
+    {
+      "name": "abc",
+      "type": "integer",
+      "default": null,
+      "nullable": false
+    }
+  ]
+}
+$json$::jsonb
+  ))
+);
+
+-- CALL rxdb_base.is_valid_table_definition('rxdb_base', 'testing',
+--   SELECT rxdb_base.prefill_table_definition('rxdb_base', 'testing', $json$
+--   {
+--     "columns": [
+--       {
+--         "name": "abc",
+--         "type": "integer",
+--         "default": null,
+--         "nullable": false
+--       }
+--     ]
+--   }
+--   $json$::jsonb)
+-- )
 
 -- Insert into Custom Type/Table (anyone with insert access to that table can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
