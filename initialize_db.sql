@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS rxdb_base.object (
     REFERENCES rxdb_base.object (object_id)
     ON UPDATE RESTRICT -- UPDATE, DELETE are anyway forbidden
     ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED
 );
 
 -- Version Header
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS rxdb_base.version (
     REFERENCES rxdb_base.object (object_id)
     ON UPDATE RESTRICT -- UPDATE, DELETE are anyway forbidden
     ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED
 );
 
 -- User Version Data
@@ -1941,7 +1943,6 @@ BEGIN
       jsonb_array_length(new_data->'data');
   END IF;
 
-
   current_creating_user_object_id := rxdb_base.current_user_object_id();
 
   -- It answers the question, at which index version_id is in columns, if it is there at all
@@ -2128,11 +2129,52 @@ GRANT CREATE ON DATABASE postgres TO PUBLIC;
 -- Initialization
 -- =====================================================
 
--- Create first user, rxdb_admin
--- TODO
--- remove constraint fk_object_creating_user on rxdb_base.object, fk_version_creating_user on rxdb_base.version
--- do what is usually done in rxdb_private.create_user(), but set user object uuid as '00000000-0000-0000-0000-000000000000'
--- readd constraint fk_object_creating_user on rxdb_base.object, fk_version_creating_user on rxdb_base.version
+-- Create first user, rxdb_admin (which is the user logged in present session, but has no associated object yet)
+
+BEGIN;
+-- To avert constraint fk_object_creating_user on rxdb_base.object, fk_version_creating_user on rxdb_base.version
+SET CONSTRAINTS ALL DEFERRED;
+-- do what is usually done in rxdb_private.create_user(), but set user object uuid as '00000000-0000-0000-0000-000000000000', and do not create database user, but only create user object
+DO
+$$
+DECLARE
+  new_object_id UUID;
+  new_password_hashed VARCHAR;
+  current_creating_user_object_id UUID := '11111111-1111-1111-1111-111111111111'::uuid;
+  new_username VARCHAR := 'rxdb_admin';
+BEGIN
+  new_password_hashed := crypt('SECRET_HERE', gen_salt('bf'));
+  EXECUTE format(
+    'GRANT rxdb_user TO %I',
+    new_username
+  );
+  INSERT INTO rxdb_base.object(
+    object_id,
+    creating_user_object_id
+  ) VALUES (
+    current_creating_user_object_id, -- Initial user is self-created
+    current_creating_user_object_id
+  ) RETURNING object_id
+    INTO new_object_id;
+  INSERT INTO rxdb_base.version(
+    version_id,
+    object_id,
+    creating_user_object_id
+  ) VALUES (
+    new_username,
+    new_object_id,
+    current_creating_user_object_id
+  );
+  INSERT INTO rxdb_private.user_version(
+    version_id,
+    password_hashed
+  ) VALUES (
+    new_username,
+    new_password_hashed
+  );
+END
+$$ LANGUAGE plpgsql;
+COMMIT;
 
 -- TODO Custom types
 
