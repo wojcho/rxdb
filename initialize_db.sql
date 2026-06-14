@@ -1737,40 +1737,25 @@ SELECT rxdb_base.prefill_table_definition( 'rxdb_base', 'testing', $json$
 $json$::jsonb
 );
 
-SELECT rxdb_base.is_valid_table_definition(
-  'rxdb_base',
-  'testing',
-  (SELECT rxdb_base.prefill_table_definition(
-     'rxdb_base', 'testing',
-     $json$
-{
-  "columns": [
-    {
-      "name": "abc",
-      "type": "integer",
-      "default": null,
-      "nullable": false
-    }
-  ]
-}
-$json$::jsonb
-  ))
-);
+WITH def AS (
+  SELECT rxdb_base.prefill_table_definition('rxdb_base', 'testing', $json$
+  {
+    "columns": [
+      {
+        "name": "abc",
+        "type": "integer",
+        "default": null,
+        "nullable": false
+      }
+    ]
+  }
+  $json$::jsonb) AS obj
+)
+SELECT rxdb_base.is_valid_table_definition('rxdb_base','testing', obj) FROM def;
 
--- CALL rxdb_base.is_valid_table_definition('rxdb_base', 'testing',
---   SELECT rxdb_base.prefill_table_definition('rxdb_base', 'testing', $json$
---   {
---     "columns": [
---       {
---         "name": "abc",
---         "type": "integer",
---         "default": null,
---         "nullable": false
---       }
---     ]
---   }
---   $json$::jsonb)
--- )
+SELECT rxdb_base.select_table_names_in_schema('rxdb_base');
+
+SELECT rxdb_base.select_table_definition('rxdb_base','testing');
 
 -- Insert into Custom Type/Table (anyone with insert access to that table can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
