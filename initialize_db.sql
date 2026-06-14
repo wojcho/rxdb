@@ -1364,9 +1364,94 @@ CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
 )
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  col JSONB;
+  cols_sql TEXT := '';
+  pk_cols TEXT := '';
+  pk_sql TEXT;
+  fk JSONB;
+  idx JSONB;
+
+  full_table_ident TEXT := format('%I.%I', domain_name, type_name);
 BEGIN
-  -- IF NOT rxdb_base.is_valid_table_definition(domain_name, type_name, table_definition) THEN ... END IF;
-  -- TODO create a new table, with all specified columns, indexes, primary keys, constraints
+  -- Validate definition
+  IF NOT rxdb_base.is_valid_table_definition(domain_name, type_name, table_definition) THEN
+    RAISE EXCEPTION 'Invalid table definition for %.%', domain_name, type_name;
+  END IF;
+
+  -- Build column definitions
+  FOR col IN
+    SELECT * FROM jsonb_array_elements(COALESCE(table_definition->'columns', '[]'::jsonb))
+  LOOP
+    cols_sql := cols_sql || format(
+      '%I %s %s %s, ',
+      col->>'name',
+      col->>'type',
+      CASE
+        WHEN (col ? 'nullable') AND (col->>'nullable')::boolean = false THEN 'NOT NULL'
+        ELSE ''
+      END,
+      CASE
+        WHEN col ? 'default' AND col->'default' IS NOT NULL THEN
+          'DEFAULT ' || col->>'default'
+        ELSE ''
+      END
+    );
+  END LOOP;
+
+  cols_sql := regexp_replace(cols_sql, ',\s*$', '');
+
+  -- Primary key
+  SELECT string_agg(quote_ident(value), ', ')
+  INTO pk_cols
+  FROM jsonb_array_elements_text(table_definition->'primary_key');
+
+  pk_sql := format(', PRIMARY KEY (%s)', pk_cols);
+
+  -- Create table
+  EXECUTE format(
+    'CREATE TABLE IF NOT EXISTS %s (%s %s)',
+    full_table_ident,
+    cols_sql,
+    pk_sql
+  );
+
+  -- Foreign keys
+  IF table_definition ? 'foreign_keys' THEN
+    FOR fk IN
+      SELECT * FROM jsonb_each(table_definition->'foreign_keys')
+    LOOP
+      EXECUTE format(
+        'ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (%s) REFERENCES %I.%I (%s)
+         ON UPDATE %s ON DELETE %s',
+        full_table_ident,
+        fk.key,
+        (SELECT string_agg(quote_ident(v), ', ')
+         FROM jsonb_array_elements_text(fk.value->'columns') v),
+        fk.value->'references'->>'schema',
+        fk.value->'references'->>'table',
+        (SELECT string_agg(quote_ident(v), ', ')
+         FROM jsonb_array_elements_text(fk.value->'references'->'columns') v),
+        fk.value->>'on_update',
+        fk.value->>'on_delete'
+      );
+    END LOOP;
+  END IF;
+
+  -- Indexes
+  IF table_definition ? 'indexes' THEN
+    FOR idx IN
+      SELECT * FROM jsonb_each(table_definition->'indexes')
+    LOOP
+      EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS %I ON %s (%s)',
+        idx.key,
+        full_table_ident,
+        (SELECT string_agg(quote_ident(v), ', ')
+         FROM jsonb_array_elements_text(idx.value->'columns') v)
+      );
+    END LOOP;
+  END IF;
 END;
 $$;
 
@@ -1406,8 +1491,8 @@ BEGIN
       'nullable', false
     )
     AND (
-      AND (c ? 'default') -- key must be present
-      AND c->'default' IS NULL -- value must be JSON null
+      (c ? 'default') -- key must be present
+      AND (c->'default' IS NULL) -- value must be JSON null
     )
   )
   INTO required_column_found;
