@@ -84,7 +84,6 @@ CREATE TABLE IF NOT EXISTS rxdb_base.version (
   object_id UUID NOT NULL, -- fk_version_object
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   creating_user_object_id UUID NOT NULL, -- fk_version_creating_user
-  is_property BOOLEAN DEFAULT FALSE, -- Whether that version can be used in graph as an edge (TODO graph queries later)
   is_tombstone BOOLEAN DEFAULT FALSE, -- Whether that version is logically removed (usual removal is forbidden)
   CONSTRAINT fk_version_object
     FOREIGN KEY (object_id)
@@ -2176,13 +2175,9 @@ END
 $$ LANGUAGE plpgsql;
 COMMIT;
 
--- TODO Custom types
-
--- Image
--- Forum
--- Chat
--- Notebook
--- Function
+-- =====================================================
+-- Custom types
+-- =====================================================
 
 -- DO $$
 -- DECLARE
@@ -2203,6 +2198,41 @@ COMMIT;
 --     $json$::jsonb) AS obj
 --   )
 --   SELECT def.obj INTO obj FROM def;
-
 --   CALL rxdb_base.create_type('rxdb_base','testing', obj);
 -- END $$;
+
+-- Image
+-- version_id VARCHAR(1024)
+-- image BLOB
+-- embedding VECTOR(512) (with vector index)
+
+-- Article
+-- version_id VARCHAR(1024)
+-- background_image UUID (FK rxdb_base.object.object_id)
+-- main_image object (FK rxdb_base.object.object_id)
+-- main_text TEXT (with fulltext search index)
+
+-- Forum Thread
+-- version_id VARCHAR(1024)
+-- parent_forum_thread_object_id VARCHAR(1024) (FK rxdb_base.object.object_id)
+-- is_leaf BOOLEAN
+-- description TEXT (with fulltext search index)
+
+-- Forum Post
+-- version_id VARCHAR(1024)
+-- forum_thread_object_id VARCHAR(1024) (FK rxdb_base.object.object_id)
+-- Main text TEXT (with fulltext search index)
+
+-- Chat Message
+-- version_id VARCHAR(1024)
+-- domain_name VARCHAR
+
+-- Notebook
+-- version_id VARCHAR(1024)
+-- description TEXT (with fulltext search index)
+
+-- Notebook Cell
+-- version_id VARCHAR(1024)
+-- forum_thread_object_id VARCHAR(1024) (FK rxdb_base.object.object_id)
+-- main_code TEXT (with fulltext search index)
+-- is_hideable BOOLEAN
