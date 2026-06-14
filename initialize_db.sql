@@ -686,51 +686,133 @@ $$;
 -- Tables/Types
 
 -- Select List of All Tables in Schema (anyone with access to schema can run)
--- CREATE OR REPLACE FUNCTION rxdb_base.select_table_names_in_schema(
---   domain_name VARCHAR
--- )
--- RETURNS JSONB
--- LANGUAGE plpgsql
--- AS $$
--- DECLARE
---   retval JSONB;
--- BEGIN
---   SELECT jsonb_agg(table_name)
---   INTO retval
---   FROM information_schema.tables
---   WHERE table_schema = domain_name
---     AND table_type = 'BASE TABLE';
---   RETURN COALESCE(retval, '[]'::jsonb);
--- END;
--- $$;
+CREATE OR REPLACE FUNCTION rxdb_base.select_table_names_in_schema(
+  domain_name VARCHAR
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  retval JSONB;
+BEGIN
+  SELECT jsonb_agg(table_name)
+  INTO retval
+  FROM information_schema.tables
+  WHERE table_schema = domain_name
+    AND table_type = 'BASE TABLE';
+  RETURN COALESCE(retval, '[]'::jsonb);
+END;
+$$;
+
+-- {
+--   "columns": [
+--     {
+--       "default": "gen_random_uuid()",
+--       "nullable": "NO",
+--       "data_type": "uuid",
+--       "column_name": "object_id"
+--     },
+--     {
+--       "default": "now()",
+--       "nullable": "NO",
+--       "data_type": "timestamp without time zone",
+--       "column_name": "created_at"
+--     },
+--     {
+--       "default": null,
+--       "nullable": "NO",
+--       "data_type": "uuid",
+--       "column_name": "creating_user_object_id"
+--     }
+--   ],
+--   "indices": [
+--     {
+--       "definition": "CREATE UNIQUE INDEX object_pkey ON rxdb_base.object USING btree (object_id)",
+--       "index_name": "object_pkey"
+--     }
+--   ],
+--   "constraints": [
+--     {
+--       "name": "fk_object_creating_user",
+--       "type": "f",
+--       "definition": "FOREIGN KEY (creating_user_object_id) REFERENCES rxdb_base.object(object_id) ON UPDATE RESTRICT ON DELETE RESTRICT"
+--     },
+--     {
+--       "name": "object_created_at_not_null",
+--       "type": "n",
+--       "definition": "NOT NULL created_at"
+--     },
+--     {
+--       "name": "object_creating_user_object_id_not_null",
+--       "type": "n",
+--       "definition": "NOT NULL creating_user_object_id"
+--     },
+--     {
+--       "name": "object_object_id_not_null",
+--       "type": "n",
+--       "definition": "NOT NULL object_id"
+--     },
+--     {
+--       "name": "object_pkey",
+--       "type": "p",
+--       "definition": "PRIMARY KEY (object_id)"
+--     }
+--   ]
+-- }
 
 -- Select Type/Table Definition (anyone with access to schema can run)
--- CREATE OR REPLACE FUNCTION rxdb_base.select_table_definition(
---   domain_name VARCHAR,
---   type_name VARCHAR
--- )
--- RETURNS JSONB
--- LANGUAGE plpgsql
--- AS $$
--- DECLARE
---   retval JSONB;
--- BEGIN
---   -- TODO select information about indices, foreign keys
---   SELECT jsonb_agg(
---     jsonb_build_object(
---       'column_name', column_name,
---       'data_type', data_type,
---       'nullable', is_nullable,
---       'default', column_default
---     )
---   )
---   INTO retval
---   FROM information_schema.columns
---   WHERE table_schema = domain_name
---     AND table_name = type_name;
---   RETURN COALESCE(retval, '[]'::jsonb);
--- END;
--- $$;
+CREATE OR REPLACE FUNCTION rxdb_base.select_table_definition(
+  domain_and_schema_name VARCHAR, -- name conflict, otherwise it would be called as elsewhere domain_name
+  type_name VARCHAR
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  retval JSONB;
+BEGIN
+  SELECT jsonb_build_object(
+    'columns', (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'column_name', column_name,
+          'data_type', data_type,
+          'nullable', is_nullable,
+          'default', column_default
+        )
+      )
+      FROM information_schema.columns
+      WHERE table_schema = domain_and_schema_name
+        AND table_name = type_name
+    ),
+
+    'indices', (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'index_name', indexname,
+          'definition', indexdef
+        )
+      )
+      FROM pg_indexes
+      WHERE schemaname = domain_and_schema_name
+        AND tablename = type_name
+    ),
+
+    'constraints', (
+      SELECT jsonb_agg(
+        jsonb_build_object(
+          'name', conname,
+          'type', contype,
+          'definition', pg_get_constraintdef(oid)
+        )
+      )
+      FROM pg_constraint
+      WHERE conrelid = format('%I.%I', domain_and_schema_name, type_name)::regclass
+    )
+  ) INTO retval;
+  RETURN COALESCE(retval, 'null'::jsonb);
+END;
+$$;
 
 -- Create Custom Type/Table (anyone with access to schema can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
@@ -843,5 +925,3 @@ GRANT CREATE ON DATABASE postgres TO PUBLIC;
 -- Custom Schemas, Tables, Versions
 -- =====================================================
 -- TODO
-
-SELECT rxdb_base.select_schema_permissions('rxdb_base');
