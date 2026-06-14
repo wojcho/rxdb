@@ -1,4 +1,11 @@
--- For testing: `sudo docker rm -f pg-test && sudo docker run --rm --name pg-test -e POSTGRES_PASSWORD=pass -p 5432:5432 -d postgres:18`
+-- For testing:
+-- ```
+-- sudo docker rm -f pg-test \
+-- && sudo docker run --rm --name pg-test \
+--   -e POSTGRES_USER=myuser \
+--   -e POSTGRES_PASSWORD=pass \
+--   -p 5432:5432 -d postgres:18
+-- ```
 -- In PostgreSQL VSCodium extension set the following:
 -- Server name: localhost
 -- Port: 5432
@@ -1729,36 +1736,222 @@ BEGIN
 END;
 $$;
 
-SELECT rxdb_base.prefill_table_definition( 'rxdb_base', 'testing', $json$
-{
-  "columns": [
-    {
-      "name": "abc",
-      "type": "integer",
-      "default": null,
-      "nullable": false
-    }
-  ]
-}
-$json$::jsonb
-);
+-- Helper function for rxdb_base.insert_custom, rxdb_base.update_custom
+CREATE OR REPLACE FUNCTION rxdb_base.is_valid_custom_mutate_payload(
+  domain_name VARCHAR,
+  type_name VARCHAR,
+  new_data JSONB
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- TODO
+  -- Validate new_data
+  IF new_data IS NULL THEN
+    RAISE EXCEPTION 'new_data cannot be null';
+  END IF;
+  IF NOT (new_data ? 'columns') THEN
+    RAISE EXCEPTION 'new_data must contain key "columns"';
+  END IF;
+  IF NOT (new_data ? 'data') THEN
+    RAISE EXCEPTION 'new_data must contain key "data"';
+  END IF;
+  IF jsonb_typeof(new_data->'columns') <> 'array' THEN
+    RAISE EXCEPTION '"columns" must be an array';
+  END IF;
+  IF jsonb_typeof(new_data->'data') <> 'array' THEN
+    RAISE EXCEPTION '"data" must be an array';
+  END IF;
+  column_count := jsonb_array_length(new_data->'columns');
+  IF column_count = 0 THEN
+    RAISE EXCEPTION '"columns" cannot be empty';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM (
+      SELECT c, count(*) AS cnt
+      FROM jsonb_array_elements_text(new_data->'columns') t(c)
+      GROUP BY c
+      HAVING count(*) > 1
+    ) dup
+  ) THEN
+    RAISE EXCEPTION 'Duplicate column names are not allowed';
+  END IF;
 
--- Insert into Custom Type/Table (anyone with insert access to that table can run)
--- CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
---   domain_name VARCHAR, -- schema name
---   type_name VARCHAR, -- table name
---   new_data JSONB -- {"columns": ["col0", "col1", ...], "data": [["val00", "val01", ...], ["val10", "val11", ...]]}
--- )
--- LANGUAGE plpgsql
--- AS $$
--- BEGIN
---   -- TODO
---   INSERT INTO rxdb_base.object () VALUES ();
---   INSERT INTO rxdb_base.version () VALUES ();
---   -- use EXECUTE with %I
---   INSERT INTO domain_name.type_name () VALUES ();
--- END;
--- $$;
+  -- check whether all arrays in "data" have same length, consistent with amount of columns
+  row_index := 0;
+  FOR row IN
+    SELECT value
+    FROM jsonb_array_elements(new_data->'data')
+  LOOP
+    IF jsonb_typeof(row) <> 'array' THEN
+      RAISE EXCEPTION
+        'data[%] must be an array',
+        row_index;
+    END IF;
+    row_length := jsonb_array_length(row);
+    IF row_length <> column_count THEN
+      RAISE EXCEPTION
+        'data[%] has % values but % columns were specified',
+        row_index,
+        row_length,
+        column_count;
+    END IF;
+    row_index := row_index + 1;
+  END LOOP;
+
+  -- check whether table exists
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.tables t
+    WHERE t.table_schema = domain_name
+      AND t.table_name   = type_name
+  ) THEN
+    RAISE EXCEPTION
+      'Table %.% does not exist',
+      domain_name,
+      type_name;
+  END IF;
+
+  -- check whether all mentioned columns exist in target table, whether there are no unknown columns (not all columns have to be provided, some can take defaults)
+  SELECT array_agg(supplied.col)
+  INTO wrong_columns
+  FROM jsonb_array_elements_text(new_data->'columns') AS supplied(col)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns c
+    WHERE c.table_schema = domain_name
+      AND c.table_name   = type_name
+      AND c.column_name  = supplied.col
+  );
+  IF wrong_columns IS NOT NULL THEN
+    RAISE EXCEPTION
+      'Unknown columns for %.%: %',
+      domain_name,
+      type_name,
+      array_to_string(wrong_columns, ', ');
+  END IF;
+END;
+$$;
+
+
+-- Insert into Custom Type/Table (anyone with insert access to table domain_name.type_name can run)
+CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
+  domain_name VARCHAR, -- schema name
+  type_name VARCHAR, -- table name
+  new_data JSONB -- {"columns": ["col0", "col1", ...], "data": [["val00", "val01", ...], ["val10", "val11", ...]]}
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  wrong_columns VARCHAR[];
+  new_object_id UUID;
+  current_creating_user_object_id UUID;
+  cols VARCHAR;
+  vals VARCHAR;
+  row JSONB;
+  row_vals VARCHAR;
+  i INT;
+BEGIN
+  -- Validate
+  -- TODO rxdb_base.is_valid_custom_mutate_payload
+
+  -- Find object ID of current user
+  current_creating_user_object_id := rxdb_base.current_user_object_id();
+
+  -- Insert len(new_data.data) amount of Objects
+  -- TODO run and gather IDs
+  INSERT INTO rxdb_base.object(
+    creating_user_object_id
+  ) VALUES (
+    current_creating_user_object_id
+  ) RETURNING object_id
+    INTO new_object_id;
+  
+  -- rxdb_base.update_custom run with gathered IDs
+END;
+$$;
+
+-- Update existing objects by adding new versions to them (anyone with insert access to table domain_name.type_name can run)
+CREATE OR REPLACE PROCEDURE rxdb_base.update_custom(
+  domain_name VARCHAR, -- schema name
+  type_name VARCHAR, -- table name
+  target_object_ids UUID[], -- ids of target objects from table rxdb_base.object
+  new_data JSONB -- {"columns": ["col0", "col1", ...], "data": [["val00", "val01", ...], ["val10", "val11", ...]]}
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- Validate
+  -- TODO rxdb_base.is_valid_custom_mutate_payload
+  -- TODO validate that length(new_data.data) = length(target_object_ids)
+
+  -- Insert Version
+  -- TODO if there is provided column "version_id", then for each of values in arrays from data array, using values at that column index, create new version ids
+  -- TODO else gather obtained default values, later use them in INSERTs
+  -- current implementation is leftover from when only one row at a time could have been inserted
+  IF new_version_id IS NULL THEN
+    -- allow version table to assign its default version_id, capture returned version_id
+    INSERT INTO rxdb_base.version(
+      object_id,
+      creating_user_object_id
+    ) VALUES (
+      new_object_id,
+      current_creating_user_object_id
+    ) RETURNING version_id INTO used_version_id;
+  ELSE
+    -- new_version_id is provided so use it
+    INSERT INTO rxdb_base.version(
+      version_id,
+      object_id,
+      creating_user_object_id
+    ) VALUES (
+      new_version_id,
+      new_object_id,
+      current_creating_user_object_id
+    );
+    used_version_id := new_version_id::uuid;
+  END IF;
+
+  -- Build column list and execute inserts into target table dynamically
+  -- Expect new_data = {"columns": ["col0","col1",...], "data": [...]}
+  IF new_data IS NULL THEN
+    RAISE EXCEPTION 'new_data cannot be null';
+  END IF;
+
+  -- columns as comma-separated, quoted identifiers
+  cols := array_to_string(
+    ARRAY(
+      SELECT format('%I', c)
+      FROM jsonb_array_elements_text(new_data->'columns') AS t(c)
+    ),
+    ', '
+  );
+
+  -- iterate rows
+  i := 0;
+  FOR row IN SELECT * FROM jsonb_array_elements(new_data->'data') LOOP
+    -- build value list for this row, cast JSON nulls to SQL NULL (unless it is not needed as case insesitive? TODO) and quote others as literals to avoid SQL injection
+    row_vals := array_to_string(
+      ARRAY(
+        SELECT
+          CASE
+            WHEN v = 'null' THEN 'NULL'
+            ELSE quote_literal(v)
+          END
+        FROM (
+          SELECT jsonb_array_elements_text(row) AS v
+        ) s
+      ),
+      ', '
+    );
+    -- Execute dynamic insert for one row of values
+    EXECUTE format('INSERT INTO %I.%I (%s) VALUES (%s)', domain_name, type_name, cols, row_vals); -- TODO will the values be cast to appropriate types, or it has to be done before?
+    i := i + 1;
+  END LOOP;
+END;
+$$;
 
 -- =====================================================
 -- Restrict Security
