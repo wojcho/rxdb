@@ -1743,35 +1743,6 @@ SELECT rxdb_base.prefill_table_definition( 'rxdb_base', 'testing', $json$
 $json$::jsonb
 );
 
-DO $$
-DECLARE
-  obj jsonb;
-BEGIN
-  WITH def AS (
-    SELECT rxdb_base.prefill_table_definition('rxdb_base','testing', $json$
-    {
-      "columns": [
-        {
-          "name": "abc",
-          "type": "integer",
-          "default": null,
-          "nullable": false
-        }
-      ]
-    }
-    $json$::jsonb) AS obj
-  )
-  SELECT def.obj INTO obj FROM def;
-
-  CALL rxdb_base.create_type('rxdb_base','testing', obj);
-END $$;
-
-
-
-SELECT rxdb_base.select_table_names_in_schema('rxdb_base');
-
-SELECT rxdb_base.select_table_definition('rxdb_base','testing');
-
 -- Insert into Custom Type/Table (anyone with insert access to that table can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.insert_custom(
 --   domain_name VARCHAR, -- schema name
@@ -1864,7 +1835,33 @@ GRANT CREATE ON DATABASE postgres TO PUBLIC;
 -- do what is usually done in rxdb_private.create_user(), but set user object uuid as '00000000-0000-0000-0000-000000000000'
 -- readd constraint fk_object_creating_user on rxdb_base.object, fk_version_creating_user on rxdb_base.version
 
--- =====================================================
--- Custom Schemas, Tables, Versions
--- =====================================================
--- TODO
+-- TODO Custom types
+
+-- Image
+-- Forum
+-- Chat
+-- Notebook
+-- Function
+
+-- DO $$
+-- DECLARE
+--   obj jsonb;
+-- BEGIN
+--   WITH def AS (
+--     SELECT rxdb_base.prefill_table_definition('rxdb_base','testing', $json$
+--     {
+--       "columns": [
+--         {
+--           "name": "abc",
+--           "type": "integer",
+--           "default": null,
+--           "nullable": false
+--         }
+--       ]
+--     }
+--     $json$::jsonb) AS obj
+--   )
+--   SELECT def.obj INTO obj FROM def;
+
+--   CALL rxdb_base.create_type('rxdb_base','testing', obj);
+-- END $$;
