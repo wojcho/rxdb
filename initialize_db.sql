@@ -448,7 +448,7 @@ $$;
 --     }
 --   },
 --   "default_privileges": {
---     "r": {
+--     "tables": {
 --       "acl": {
 --         "PUBLIC": [
 --           "INSERT",
@@ -572,7 +572,16 @@ BEGIN
   -- Default
   SELECT COALESCE(
     jsonb_object_agg(
-      d.defaclobjtype,
+      CASE d.defaclobjtype
+        WHEN 'r' THEN 'tables'
+        WHEN 'S' THEN 'sequences'
+        WHEN 'f' THEN 'functions'
+        WHEN 'T' THEN 'types'
+        WHEN 'n' THEN 'schemas'
+        WHEN 'd' THEN 'domains'
+        WHEN 'c' THEN 'columns'
+        ELSE d.defaclobjtype::text
+      END,
       jsonb_build_object(
         'owner', owner_role.rolname,
         'schema',
@@ -690,55 +699,51 @@ $$;
 -- {
 --   "columns": [
 --     {
+--       "name": "object_id",
+--       "type": "uuid",
 --       "default": "gen_random_uuid()",
---       "nullable": "NO",
---       "data_type": "uuid",
---       "column_name": "object_id"
+--       "nullable": false
 --     },
 --     {
+--       "name": "created_at",
+--       "type": "timestamp without time zone",
 --       "default": "now()",
---       "nullable": "NO",
---       "data_type": "timestamp without time zone",
---       "column_name": "created_at"
+--       "nullable": false
 --     },
 --     {
+--       "name": "creating_user_object_id",
+--       "type": "uuid",
 --       "default": null,
---       "nullable": "NO",
---       "data_type": "uuid",
---       "column_name": "creating_user_object_id"
+--       "nullable": false
 --     }
 --   ],
---   "indices": [
+--   "indexes": [
 --     {
---       "definition": "CREATE UNIQUE INDEX object_pkey ON rxdb_base.object USING btree (object_id)",
---       "index_name": "object_pkey"
+--       "name": "rxdb_base.object_pkey",
+--       "unique": true,
+--       "columns": [
+--         "object_id"
+--       ]
 --     }
 --   ],
---   "constraints": [
+--   "primary_key": [
+--     "object_id"
+--   ],
+--   "foreign_keys": [
 --     {
 --       "name": "fk_object_creating_user",
---       "type": "f",
---       "definition": "FOREIGN KEY (creating_user_object_id) REFERENCES rxdb_base.object(object_id) ON UPDATE RESTRICT ON DELETE RESTRICT"
---     },
---     {
---       "name": "object_created_at_not_null",
---       "type": "n",
---       "definition": "NOT NULL created_at"
---     },
---     {
---       "name": "object_creating_user_object_id_not_null",
---       "type": "n",
---       "definition": "NOT NULL creating_user_object_id"
---     },
---     {
---       "name": "object_object_id_not_null",
---       "type": "n",
---       "definition": "NOT NULL object_id"
---     },
---     {
---       "name": "object_pkey",
---       "type": "p",
---       "definition": "PRIMARY KEY (object_id)"
+--       "columns": [
+--         "creating_user_object_id"
+--       ],
+--       "on_delete": "RESTRICT",
+--       "on_update": "RESTRICT",
+--       "references": {
+--         "table": "object",
+--         "schema": "rxdb_base",
+--         "columns": [
+--           "object_id"
+--         ]
+--       }
 --     }
 --   ]
 -- }
@@ -754,48 +759,125 @@ AS $$
 DECLARE
   retval JSONB;
 BEGIN
+  WITH cols AS (
+    SELECT
+      c.column_name,
+      c.data_type,
+      c.is_nullable,
+      c.column_default
+    FROM information_schema.columns c
+    WHERE c.table_schema = domain_and_schema_name
+      AND c.table_name = type_name
+  ),
+
+  col_json AS (
+    SELECT jsonb_agg(
+      jsonb_build_object(
+        'name', column_name,
+        'type', data_type,
+        'nullable', (is_nullable = 'YES'),
+
+        -- structured default instead of raw string only
+        'default',
+        column_default
+      )
+    ) AS columns
+    FROM cols
+  ),
+
+  pk AS (
+    SELECT
+      jsonb_agg(a.attname ORDER BY k.n) AS columns
+    FROM pg_constraint c
+    JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, n) ON true
+    JOIN pg_attribute a
+      ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+    WHERE c.contype = 'p'
+      AND c.conrelid = format('%I.%I', domain_and_schema_name, type_name)::regclass
+  ),
+
+  fks AS (
+    SELECT jsonb_agg(
+      jsonb_build_object(
+        'name', c.conname,
+
+        'columns',
+          (SELECT jsonb_agg(a1.attname ORDER BY k1.n)
+           FROM unnest(c.conkey) WITH ORDINALITY AS k1(attnum, n)
+           JOIN pg_attribute a1
+             ON a1.attrelid = c.conrelid AND a1.attnum = k1.attnum),
+
+        'references',
+          jsonb_build_object(
+            'schema', nsp.nspname,
+            'table', cls.relname,
+
+            'columns',
+              (SELECT jsonb_agg(a2.attname ORDER BY k2.n)
+               FROM unnest(c.confkey) WITH ORDINALITY AS k2(attnum, n)
+               JOIN pg_attribute a2
+                 ON a2.attrelid = c.confrelid AND a2.attnum = k2.attnum)
+          ),
+
+        'on_update',
+          CASE c.confupdtype
+            WHEN 'c' THEN 'CASCADE'
+            WHEN 'r' THEN 'RESTRICT'
+            WHEN 'n' THEN 'SET_NULL'
+            WHEN 'd' THEN 'SET_DEFAULT'
+            ELSE 'NO_ACTION'
+          END,
+
+        'on_delete',
+          CASE c.confdeltype
+            WHEN 'c' THEN 'CASCADE'
+            WHEN 'r' THEN 'RESTRICT'
+            WHEN 'n' THEN 'SET_NULL'
+            WHEN 'd' THEN 'SET_DEFAULT'
+            ELSE 'NO_ACTION'
+          END
+      )
+    ) AS fks
+    FROM pg_constraint c
+    JOIN pg_class cls ON cls.oid = c.confrelid
+    JOIN pg_namespace nsp ON nsp.oid = cls.relnamespace
+    WHERE c.contype = 'f'
+      AND c.conrelid = format('%I.%I', domain_and_schema_name, type_name)::regclass
+  ),
+
+  indexes AS (
+    SELECT jsonb_agg(
+      jsonb_build_object(
+        'name', i.indexrelid::regclass::text,
+        'unique', i.indisunique,
+
+        'columns',
+          (SELECT jsonb_agg(a.attname ORDER BY k.n)
+           FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, n)
+           JOIN pg_attribute a
+             ON a.attrelid = i.indrelid AND a.attnum = k.attnum)
+      )
+    ) AS indexes
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = domain_and_schema_name
+      AND c.relname = type_name
+  )
+
   SELECT jsonb_build_object(
-    'columns', (
-      SELECT jsonb_agg(
-        jsonb_build_object(
-          'column_name', column_name,
-          'data_type', data_type,
-          'nullable', is_nullable,
-          'default', column_default
-        )
-      )
-      FROM information_schema.columns
-      WHERE table_schema = domain_and_schema_name
-        AND table_name = type_name
-    ),
+    'columns', (SELECT columns FROM col_json),
+    'primary_key', (SELECT columns FROM pk),
+    'foreign_keys', (SELECT fks FROM fks),
+    'indexes', (SELECT indexes FROM indexes)
+  )
+  INTO retval;
 
-    'indices', (
-      SELECT jsonb_agg(
-        jsonb_build_object(
-          'index_name', indexname,
-          'definition', indexdef
-        )
-      )
-      FROM pg_indexes
-      WHERE schemaname = domain_and_schema_name
-        AND tablename = type_name
-    ),
-
-    'constraints', (
-      SELECT jsonb_agg(
-        jsonb_build_object(
-          'name', conname,
-          'type', contype,
-          'definition', pg_get_constraintdef(oid)
-        )
-      )
-      FROM pg_constraint
-      WHERE conrelid = format('%I.%I', domain_and_schema_name, type_name)::regclass
-    )
-  ) INTO retval;
-  RETURN COALESCE(retval, 'null'::jsonb);
+  RETURN COALESCE(retval, '{}'::jsonb);
 END;
 $$;
+
+SELECT rxdb_base.select_table_definition('rxdb_base', 'object');
 
 -- Create Custom Type/Table (anyone with access to schema can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
@@ -908,5 +990,3 @@ GRANT CREATE ON DATABASE postgres TO PUBLIC;
 -- Custom Schemas, Tables, Versions
 -- =====================================================
 -- TODO
-
-SELECT rxdb_base.select_schema_permissions('rxdb_base');
