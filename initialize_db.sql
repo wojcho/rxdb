@@ -1510,9 +1510,35 @@ RETURNS JSONB
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  retval JSONB;
+  retval JSONB := COALESCE(table_definition, '{}'::jsonb);
+  cols JSONB;
+  idxs JSONB;
+  fks JSONB;
+  pk JSONB;
+  required_col JSONB := jsonb_build_object(
+    'name', 'version_id',
+    'type', 'character varying',
+    'default', NULL,
+    'nullable', false
+  );
+  required_index_def JSONB := jsonb_build_object(
+    'unique', true,
+    'columns', jsonb_build_array('version_id')
+  );
+  required_fk_def JSONB := jsonb_build_object(
+    'columns', jsonb_build_array('version_id'),
+    'on_delete', 'RESTRICT',
+    'on_update', 'RESTRICT',
+    'references', jsonb_build_object(
+      'table', 'version',
+      'schema', 'rxdb_base',
+      'columns', jsonb_build_array('version_id')
+    )
+  );
+  required_index_name TEXT := format('%I.%I_pkey', domain_name, type_name);
+  required_fk_name TEXT := format('fk_%I_version_rxdb_base', type_name);
 BEGIN
-  -- TODO add the required column representations under column keys
+  -- add the required column representations under column keys
   -- "columns": [
   --   {
   --     "name": "version_id",
@@ -1522,10 +1548,35 @@ BEGIN
   --   },
   --   <... any other columns can appear or can also not appear>
   -- ]
+  -- Ensure "columns" array exists
+  cols := COALESCE(retval->'columns', '[]'::jsonb);
+  -- If a column with same name exists, try to merge/override its properties to ensure required properties are present
+  IF NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(cols) AS c
+    WHERE c->>'name' = 'version_id'
+  ) THEN
+    -- append required column
+    cols := cols || jsonb_build_array(required_col);
+  ELSE
+    -- replace existing element with merged version that ensures required properties
+    cols := (
+      SELECT jsonb_agg(
+        CASE
+          WHEN elem->>'name' = 'version_id' THEN
+            -- keep other keys from existing element but force type, nullable and ensure default key exists with null value
+            (elem - 'type' - 'nullable' - 'default') || required_col
+          ELSE
+            elem
+        END
+      )
+      FROM jsonb_array_elements(cols) AS t(elem)
+    );
+  END IF;
+  retval := retval || jsonb_build_object('columns', cols);
 
-  -- TODO add the required index, retain other indexes
+  -- add the required index, retain other indexes
   -- "indexes": {
-  --   "<domain_name>.<type_name>": {
+  --   "<domain_name>.<type_name>_pkey": {
   --     "unique": true,
   --     "columns": [
   --       "version_id"
@@ -1533,15 +1584,30 @@ BEGIN
   --   },
   --   <... any other indexes can appear or can also not appear>
   -- },
+  -- Ensure "indexes" object exists
+  idxs := COALESCE(retval->'indexes', '{}'::jsonb);
+  IF NOT (EXISTS (
+    SELECT 1 FROM jsonb_each(idxs) AS i(name, def)
+    WHERE def @> jsonb_build_object(
+      'unique', true,
+      'columns', jsonb_build_array('version_id')
+    )
+  )) THEN
+    -- add or overwrite the required index name with required_index_def
+    idxs := idxs || jsonb_build_object(required_index_name, required_index_def);
+  END IF;
+  retval := retval || jsonb_build_object('indexes', idxs);
 
-  -- TODO add the required primary key
+  -- add the required primary key
   -- "primary_key": [
   --   "version_id"
   -- ]
+  pk := jsonb_build_array('version_id');
+  retval := retval || jsonb_build_object('primary_key', pk);
 
-  -- TODO add the required foreign keys, retain other foreign keys
+  -- add the required foreign keys, retain other foreign keys
   -- "foreign_keys": {
-  --   "fk_log_version_version_rxdb_base": {
+  --   "fk_<table_name>_version_<schema_name>": {
   --     "columns": [
   --       "version_id"
   --     ],
@@ -1557,8 +1623,18 @@ BEGIN
   --   },
   --   <... any other foreign keys can appear or can also not appear>
   -- }
+  -- Ensure "foreign_keys" object exists
+  fks := COALESCE(retval->'foreign_keys', '{}'::jsonb);
+  IF NOT (EXISTS (
+    SELECT 1 FROM jsonb_each(fks) AS fk(name, def)
+    WHERE def @> required_fk_def
+  )) THEN
+    fks := fks || jsonb_build_object(required_fk_name, required_fk_def);
+  END IF;
+  retval := retval || jsonb_build_object('foreign_keys', fks);
 
-  -- TODO if required fields are not added, add them, even top-level keys {"columns": ..., "indexes", "primary_key": ..., "foreign_keys": ...} can be omitted
+  -- It should be ready by now so return
+  RETURN retval;
 END;
 $$;
 
