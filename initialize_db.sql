@@ -1904,6 +1904,8 @@ CREATE OR REPLACE PROCEDURE rxdb_base.update_custom(
 )
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  target_version_ids VARCHAR[];
 BEGIN
   -- Validate new_data
   PERFORM rxdb_base.is_valid_custom_mutate_payload(
@@ -1921,32 +1923,64 @@ BEGIN
       jsonb_array_length(new_data->'data');
   END IF;
 
-  -- Insert Version
-  -- TODO if there is provided column "version_id", then for each of values in arrays from data array, using values at that column index, create new version ids
-  -- TODO else gather obtained default values, later use them in INSERTs
-  -- current implementation is leftover from when only one row at a time could have been inserted
-  IF new_version_id IS NULL THEN
-    -- allow version table to assign its default version_id, capture returned version_id
-    INSERT INTO rxdb_base.version(
-      object_id,
-      creating_user_object_id
-    ) VALUES (
-      new_object_id,
-      current_creating_user_object_id
-    ) RETURNING version_id INTO used_version_id;
-  ELSE
-    -- new_version_id is provided so use it
-    INSERT INTO rxdb_base.version(
-      version_id,
-      object_id,
-      creating_user_object_id
-    ) VALUES (
-      new_version_id,
-      new_object_id,
-      current_creating_user_object_id
-    );
-    used_version_id := new_version_id::uuid;
+  -- At which index version_id is in columns? If it is there at all
+  version_id_col_idx := NULL;
+  SELECT ordinality
+  INTO version_id_col_idx
+  FROM jsonb_array_elements_text(new_data->'columns')
+    WITH ORDINALITY t(col, ordinality)
+  WHERE col = 'version_id';
+  IF version_id_col_idx IS NOT NULL THEN -- Ordinality starts from 1, convert to starting from 0
+    version_id_col_idx := version_id_col_idx - 1;
   END IF;
+
+  -- Insert Version
+  -- if there is provided column "version_id", then for each of values in arrays from data array, using values at that column index, create new version ids
+  -- else gather obtained default values, later use them in INSERTs
+  FOR i IN 0 .. jsonb_array_length(new_data->'data') - 1
+  LOOP
+    row := (new_data->'data')->i;
+
+    IF version_id_col_idx IS NOT NULL THEN
+      used_version_id := row->>version_id_col_idx;
+
+      INSERT INTO rxdb_base.version (
+        version_id,
+        object_id,
+        creating_user_object_id
+      ) VALUES (
+        used_version_id,
+        target_object_ids[i + 1],
+        current_creating_user_object_id
+      );
+    ELSE
+      INSERT INTO rxdb_base.version (
+        object_id,
+        creating_user_object_id
+      ) VALUES (
+        target_object_ids[i + 1],
+        current_creating_user_object_id
+      )
+      RETURNING version_id
+      INTO used_version_id;
+    END IF;
+
+    target_version_ids := array_append(
+        target_version_ids,
+        used_version_id
+      );
+  END LOOP;
+  -- Now target_version_ids[1] corresponds to target_object_ids[1] which corresponds to new_data.data[0]
+
+  -- Inject version_id if it was not provided
+  -- TODO
+  -- If version_id column missing:
+  --   effective_columns := ARRAY['version_id'] || supplied_columns;
+  --   For each row
+  --   effective_values := ARRAY[target_version_ids[i]] || supplied_values;
+  -- Else, If version_id column exists:
+  --   effective_columns := supplied_columns;
+  --   effective_values := supplied_values;
 
   -- Build column list and execute inserts into target table dynamically
   -- Expect new_data = {"columns": ["col0","col1",...], "data": [...]}
@@ -1970,7 +2004,8 @@ BEGIN
   -- iterate rows
   i := 0;
   FOR row IN SELECT * FROM jsonb_array_elements(new_data->'data') LOOP
-    -- build value list for this row, cast JSON nulls to SQL NULL (unless it is not needed as case insesitive? TODO) and quote others as literals to avoid SQL injection
+    -- TODO use jsonb_populate_record
+    -- jsonb_array_elements_text converts everything to text wrongly
     row_vals := array_to_string(
       ARRAY(
         SELECT
