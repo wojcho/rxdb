@@ -1370,44 +1370,94 @@ BEGIN
 END;
 $$;
 
+-- Return true if table_definition has the required columns, indexes, primary keys, foreign keys with appropriate properties (anyone can call)
 CREATE OR REPLACE FUNCTION rxdb_base.is_valid_table_definition(
   domain_name VARCHAR,
   type_name VARCHAR,
-  table_definition JSONB -- as returned by rxdb_base.select_table_definition
+  table_definition JSONB -- as returned by rxdb_base.select_table_definition, {"columns": ..., "indexes", "primary_key": ..., "foreign_keys": ...}
 )
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  required_column_found BOOLEAN;
+  required_pk_found BOOLEAN;
+  required_index_found BOOLEAN;
+  required_fk_found BOOLEAN;
 BEGIN
-  -- TODO check that table_definition has required column
+  -- check that table_definition has required column
   -- "columns": [
   --   {
   --     "name": "version_id",
   --     "type": "character varying",
-  --     "default": null,
+  --     "default": null, (must be present, has to be null)
   --     "nullable": false
   --   },
-  --   <... any other columns can or might not appear>
+  --   <... any other columns can appear or can also not appear>
   -- ]
+  SELECT EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(
+      COALESCE(table_definition->'columns', '[]'::jsonb)
+    ) AS c
+    WHERE c @> jsonb_build_object(
+      'name', 'version_id',
+      'type', 'character varying',
+      'nullable', false
+    )
+    AND (
+      AND (c ? 'default') -- key must be present
+      AND c->'default' IS NULL -- value must be JSON null
+    )
+  )
+  INTO required_column_found;
 
-  -- TODO check that table_definition has appropriate indexes
+  IF NOT required_column_found THEN
+    RETURN FALSE;
+  END IF;
+
+  -- check that table_definition has appropriate indexes
   -- "indexes": {
-  --   "<domain_name>.<type_name>": {
+  --   "<domain_name>.<type_name>_pkey": { (name not checked)
   --     "unique": true,
   --     "columns": [
-  --       "version_id"
+  --       "version_id" (only this, not subset)
   --     ]
   --   },
-  --   <... any other indexes can or might not appear>
+  --   <... any other indexes can appear or can also not appear>
   -- },
+  SELECT EXISTS (
+    SELECT 1
+    FROM jsonb_each(
+      COALESCE(table_definition->'indexes', '{}'::jsonb)
+    ) AS idx(name, def)
+    WHERE def @> jsonb_build_object(
+      'unique', true,
+      'columns', jsonb_build_array('version_id')
+    )
+  )
+  INTO required_index_found;
 
-  -- TODO check that table_definition has
+  IF NOT required_index_found THEN
+    RETURN FALSE;
+  END IF;
+
+  -- check that table_definition has
   -- "primary_key": [
   --   "version_id"
-  -- ]
+  -- ], (no other pk columns)
+  SELECT
+    COALESCE(table_definition->'primary_key', '[]'::jsonb)
+      = jsonb_build_array('version_id')
+  INTO required_pk_found;
 
-  -- TODO check that table_definition has
+  IF NOT required_pk_found THEN
+    RETURN FALSE;
+  END IF;
+
+  -- check that table_definition has
   -- "foreign_keys": {
-  --   "fk_log_version_version_rxdb_base": {
+  --   "fk_<table_name>_version_<schema_name>": { (name not checked)
   --     "columns": [
   --       "version_id"
   --     ],
@@ -1421,12 +1471,36 @@ BEGIN
   --       ]
   --     }
   --   },
-  --   <... any other foreign keys can or might not appear>
+  --   <... any other foreign keys can appear or can also not appear>
   -- }
+  SELECT EXISTS (
+    SELECT 1
+    FROM jsonb_each(
+      COALESCE(table_definition->'foreign_keys', '{}'::jsonb)
+    ) AS fk(name, def)
+    WHERE def @> jsonb_build_object(
+      'columns', jsonb_build_array('version_id'),
+      'on_update', 'RESTRICT',
+      'on_delete', 'RESTRICT',
+      'references', jsonb_build_object(
+        'schema', 'rxdb_base',
+        'table', 'version',
+        'columns', jsonb_build_array('version_id')
+      )
+    )
+  )
+  INTO required_fk_found;
+
+  IF NOT required_fk_found THEN
+    RETURN FALSE;
+  END IF;
+
+  -- If not returned earlier then it is correct
+  RETURN TRUE;
 END;
 $$;
 
--- Pre-fill
+-- Pre-fill (anyone can call)
 CREATE OR REPLACE FUNCTION rxdb_base.prefill_table_definition(
   domain_name VARCHAR,
   type_name VARCHAR,
@@ -1446,7 +1520,7 @@ BEGIN
   --     "default": null,
   --     "nullable": false
   --   },
-  --   <... any other columns can or might not appear>
+  --   <... any other columns can appear or can also not appear>
   -- ]
 
   -- TODO add the required index, retain other indexes
@@ -1457,7 +1531,7 @@ BEGIN
   --       "version_id"
   --     ]
   --   },
-  --   <... any other indexes can or might not appear>
+  --   <... any other indexes can appear or can also not appear>
   -- },
 
   -- TODO add the required primary key
@@ -1481,10 +1555,10 @@ BEGIN
   --       ]
   --     }
   --   },
-  --   <... any other foreign keys can or might not appear>
+  --   <... any other foreign keys can appear or can also not appear>
   -- }
 
-  -- TODO if required fields are not added, add them
+  -- TODO if required fields are not added, add them, even top-level keys {"columns": ..., "indexes", "primary_key": ..., "foreign_keys": ...} can be omitted
 END;
 $$;
 
