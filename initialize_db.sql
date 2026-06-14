@@ -344,51 +344,132 @@ AS $$
   FROM grouped;
 $$;
 
--- TODO default ACLs
-
 -- {
+--   "types": {},
 --   "schema": {
---     "name": "rxdb_base",
---     "acl": {...}
---   },
---   "relations": {
---     "users": {
---       "kind": "r",
---       "owner": "rxdb_admin",
---       "acl": {...}
+--     "acl": {
+--       "PUBLIC": [
+--         "USAGE"
+--       ],
+--       "rxdb_admin": [
+--         "CREATE",
+--         "USAGE"
+--       ]
 --     },
---     "users_id_seq": {
---       "kind": "S",
---       "owner": "rxdb_admin",
---       "acl": {...}
---     }
+--     "name": "rxdb_base"
 --   },
 --   "routines": {
---     "rxdb_base.do_something(integer)": {
---       "name": "do_something",
+--     "rxdb_base.acl_to_json(aclitem[])": {
+--       "acl": {},
 --       "kind": "f",
---       "owner": "rxdb_admin",
---       "language": "plpgsql",
---       "acl": {...}
+--       "name": "acl_to_json",
+--       "owner": "postgres",
+--       "language": "sql"
+--     },
+--     "rxdb_base.current_user_object_id()": {
+--       "acl": {},
+--       "kind": "f",
+--       "name": "current_user_object_id",
+--       "owner": "postgres",
+--       "language": "plpgsql"
+--     },
+--     "rxdb_base.select_accessible_schemas()": {
+--       "acl": {},
+--       "kind": "f",
+--       "name": "select_accessible_schemas",
+--       "owner": "postgres",
+--       "language": "plpgsql"
+--     },
+--     "rxdb_base.insert_log(character varying,jsonb)": {
+--       "acl": {},
+--       "kind": "p",
+--       "name": "insert_log",
+--       "owner": "postgres",
+--       "language": "plpgsql"
+--     },
+--     "rxdb_base.select_schema_permissions(character varying)": {
+--       "acl": {},
+--       "kind": "f",
+--       "name": "select_schema_permissions",
+--       "owner": "postgres",
+--       "language": "plpgsql"
 --     }
 --   },
---   "types": {
---     "user_status": {
---       "kind": "e",
---       "owner": "rxdb_admin",
---       "acl": {...}
+--   "relations": {
+--     "object": {
+--       "acl": {
+--         "PUBLIC": [
+--           "INSERT",
+--           "SELECT"
+--         ],
+--         "postgres": [
+--           "DELETE",
+--           "INSERT",
+--           "MAINTAIN",
+--           "REFERENCES",
+--           "SELECT",
+--           "TRIGGER",
+--           "TRUNCATE",
+--           "UPDATE"
+--         ]
+--       },
+--       "kind": "r",
+--       "owner": "postgres"
+--     },
+--     "version": {
+--       "acl": {
+--         "PUBLIC": [
+--           "INSERT",
+--           "SELECT"
+--         ],
+--         "postgres": [
+--           "DELETE",
+--           "INSERT",
+--           "MAINTAIN",
+--           "REFERENCES",
+--           "SELECT",
+--           "TRIGGER",
+--           "TRUNCATE",
+--           "UPDATE"
+--         ]
+--       },
+--       "kind": "r",
+--       "owner": "postgres"
+--     },
+--     "log_version": {
+--       "acl": {
+--         "PUBLIC": [
+--           "INSERT",
+--           "SELECT"
+--         ],
+--         "postgres": [
+--           "DELETE",
+--           "INSERT",
+--           "MAINTAIN",
+--           "REFERENCES",
+--           "SELECT",
+--           "TRIGGER",
+--           "TRUNCATE",
+--           "UPDATE"
+--         ]
+--       },
+--       "kind": "r",
+--       "owner": "postgres"
 --     }
 --   },
---   "default_privileges": {
---     "rxdb_admin": {
+--   "default_privileges": [
+--     {
+--       "acl": {
+--         "PUBLIC": [
+--           "INSERT",
+--           "SELECT"
+--         ]
+--       },
+--       "owner": "rxdb_admin",
 --       "schema": "rxdb_base",
---       "objects": {
---         "r": ["SELECT"],
---         "S": ["USAGE"],
---         "f": ["EXECUTE"]
---       }
+--       "object_type": "r"
 --     }
---   }
+--   ]
 -- }
 
 -- Select Permissions in a Schema, used for reflection purposes (anyone with access to schema can run)
@@ -554,8 +635,6 @@ BEGIN
   RETURN retval;
 END;
 $$;
-
-SELECT rxdb_base.select_schema_permissions('rxdb_base');
 
 -- Create Custom Domain/Schema (Schema and Log Table) (anoyone can run)
 -- CREATE OR REPLACE PROCEDURE rxdb_base.create_domain (
