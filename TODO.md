@@ -1,3 +1,6 @@
+- fulltext search index support
+- vector search index support
+
 - image
 - article
 - forum

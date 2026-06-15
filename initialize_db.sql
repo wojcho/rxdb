@@ -1214,7 +1214,8 @@ $$;
 --       "unique": true,
 --       "columns": [
 --         "version_id"
---       ]
+--       ],
+--       "access_method": "btree"
 --     }
 --   },
 --   "primary_key": [
@@ -1338,16 +1339,20 @@ BEGIN
       jsonb_build_object(
         'unique', i.indisunique,
 
+        'access_method', am.amname,
+
         'columns',
           (SELECT jsonb_agg(a.attname ORDER BY k.n)
-           FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, n)
-           JOIN pg_attribute a
-             ON a.attrelid = i.indrelid AND a.attnum = k.attnum)
+          FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, n)
+          JOIN pg_attribute a
+            ON a.attrelid = i.indrelid AND a.attnum = k.attnum)
       )
     ) AS indexes
     FROM pg_index i
     JOIN pg_class c ON c.oid = i.indrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_class ic ON ic.oid = i.indexrelid
+    JOIN pg_am am ON am.oid = ic.relam
     WHERE n.nspname = domain_and_schema_name
       AND c.relname = type_name
   )
@@ -1363,6 +1368,19 @@ BEGIN
   RETURN COALESCE(retval, '{}'::jsonb);
 END;
 $$;
+
+-- Test usage
+-- CREATE TABLE IF NOT EXISTS rxdb_base.test_gin (
+--   version_id character varying NOT NULL,
+--   data jsonb NOT NULL DEFAULT '{}'::jsonb
+-- );
+-- ALTER TABLE rxdb_base.test_gin ADD COLUMN search tsvector;
+-- CREATE INDEX IF NOT EXISTS test_gin_search_gin_idx
+-- ON rxdb_base.test_gin
+-- USING gin (search);
+-- SELECT rxdb_base.select_table_definition('rxdb_base', 'log_version');
+-- SELECT rxdb_base.select_table_definition('rxdb_base', 'test_gin');
+-- {"columns": [{"name": "version_id", "type": "character varying", "default": null, "nullable": false}, {"name": "data", "type": "jsonb", "default": "'{}'::jsonb", "nullable": false}, {"name": "search", "type": "tsvector", "default": null, "nullable": true}], "indexes": {"rxdb_base.test_gin_search_gin_idx": {"unique": false, "columns": ["search"], "access_method": "gin"}}, "primary_key": null, "foreign_keys": null}
 
 -- Create Custom Type/Table (anyone with access to schema can run)
 CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
