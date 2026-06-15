@@ -2243,7 +2243,7 @@ COMMIT;
 -- version_id VARCHAR(1024)
 -- background_image_object_id UUID (FK rxdb_base.object.object_id)
 -- main_image_object_id  UUID (FK rxdb_base.object.object_id)
--- main_text TEXT (with fulltext search index)
+-- main_text TEXT (with GIN index)
 -- CALL rxdb_base.create_type_with_prefill('rxdb_base','article', $json$
 -- {
 --   "columns": [
@@ -2274,7 +2274,7 @@ COMMIT;
 -- version_id VARCHAR(1024)
 -- parent_object_id UUID (FK rxdb_base.object.object_id)
 -- is_leaf BOOLEAN
--- description TEXT (with fulltext search index)
+-- description TEXT (with GIN index)
 CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_thread', $json$
 {
   "columns": [
@@ -2322,7 +2322,7 @@ SELECT rxdb_base.select_table_definition('rxdb_base', 'forum_thread');
 -- version_id VARCHAR(1024)
 -- forum_thread_object_id UUID (FK rxdb_base.object.object_id)
 -- reply_to_forum_post_object_id UUID (FK rxdb_base.object.object_id)
--- main_text TEXT (with fulltext search index)
+-- main_text TEXT (with GIN index)
 CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
 {
   "columns": [
@@ -2407,7 +2407,7 @@ SELECT rxdb_base.select_table_definition('rxdb_base', 'forum_post');
 
 -- Notebook
 -- version_id VARCHAR(1024)
--- description TEXT (with fulltext search index)
+-- description TEXT (with GIN index)
 -- CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
 -- {
 --   "columns": [
@@ -2422,12 +2422,11 @@ SELECT rxdb_base.select_table_definition('rxdb_base', 'forum_post');
 -- $json$::jsonb);
 -- TODO index
 
-
 -- Notebook Cell
 -- version_id VARCHAR(1024)
 -- notebook_object_id UUID (FK rxdb_base.object.object_id)
 -- is_hideable BOOLEAN
--- main_code TEXT (with fulltext search index)
+-- main_code TEXT (with GIN index)
 -- CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
 -- {
 --   "columns": [
