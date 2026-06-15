@@ -161,7 +161,6 @@ CREATE OR REPLACE PROCEDURE rxdb_private.insert_user(
   new_password VARCHAR
 )
 LANGUAGE plpgsql
-SECURITY DEFINER
 AS $$
 DECLARE
   new_object_id UUID;
@@ -909,7 +908,6 @@ CREATE OR REPLACE PROCEDURE rxdb_base.update_domain_permissions (
   schema_permissions JSONB -- similar to values returned by rxdb_base.select_schema_permissions
 )
 LANGUAGE plpgsql
-SECURITY DEFINER
 AS $$
 DECLARE
   schema_acl JSONB;
@@ -2153,11 +2151,11 @@ TO rxdb_admin;
 
 ALTER FUNCTION rxdb_base.current_user_object_id() OWNER TO rxdb_admin;
 GRANT EXECUTE ON FUNCTION rxdb_base.select_accessible_schemas() TO PUBLIC;
-REVOKE ALL ON FUNCTION rxdb_private.insert_user FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rxdb_private.insert_user TO rxdb_admin;
-ALTER FUNCTION rxdb_private.insert_user(VARCHAR, VARCHAR)
+REVOKE ALL ON PROCEDURE rxdb_private.insert_user FROM PUBLIC;
+GRANT EXECUTE ON PROCEDURE rxdb_private.insert_user TO rxdb_admin;
+ALTER PROCEDURE rxdb_private.insert_user(VARCHAR, VARCHAR)
 SET search_path = rxdb_private, pg_temp;
-GRANT EXECUTE ON FUNCTION rxdb_base.insert_log(VARCHAR, JSONB) TO PUBLIC;
+GRANT EXECUTE ON PROCEDURE rxdb_base.insert_log(VARCHAR, JSONB) TO PUBLIC;
 
 -- Any user can create their own schemas, where they can do anything
 GRANT CREATE ON DATABASE postgres TO PUBLIC;
@@ -2251,7 +2249,7 @@ $json$::jsonb);
 ALTER TABLE rxdb_base.image DROP COLUMN embedding;
 ALTER TABLE rxdb_base.image ADD COLUMN embedding vector(1536);
 CREATE INDEX IF NOT EXISTS image_embedding_hnsw_idx ON rxdb_base.image USING hnsw (embedding vector_cosine_ops);
-SELECT rxdb_base.select_table_definition('rxdb_base', 'image');
+-- SELECT rxdb_base.select_table_definition('rxdb_base', 'image');
 -- {"columns": [{"name": "version_id", "type": "character varying", "default": null, "nullable": false}, {"name": "image", "type": "bytea", "default": null, "nullable": false}, {"name": "embedding", "type": "USER-DEFINED", "default": null, "nullable": true}], "indexes": {"rxdb_base.image_pkey": {"unique": true, "columns": ["version_id"]}, "rxdb_base.\"rxdb_base.image_pkey\"": {"unique": false, "columns": ["version_id"]}, "rxdb_base.image_embedding_hnsw_idx": {"unique": false, "columns": ["embedding"]}}, "primary_key": ["version_id"], "foreign_keys": {"fk_image_version_rxdb_base": {"columns": ["version_id"], "on_delete": "RESTRICT", "on_update": "RESTRICT", "references": {"table": "version", "schema": "rxdb_base", "columns": ["version_id"]}}}}
 
 -- Article
