@@ -4,7 +4,7 @@
 -- && sudo docker run --rm --name pg-test \
 --   -e POSTGRES_USER=rxdb_admin \
 --   -e POSTGRES_PASSWORD=SECRET_HERE \
---   -p 5432:5432 -d postgres:18
+--   -p 5432:5432 -d pgvector/pgvector:pg18-trixie
 -- ```
 -- In PostgreSQL VSCodium extension set the following:
 -- Server name: localhost
@@ -18,6 +18,7 @@
 -- =====================================================
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- =====================================================
 -- Security
@@ -2219,26 +2220,26 @@ COMMIT;
 
 -- Image
 -- version_id VARCHAR(1024)
--- image BLOB
+-- image BYTEA
 -- embedding VECTOR(512)
--- CALL rxdb_base.create_type_with_prefill('rxdb_base','image', $json$
--- {
---   "columns": [
---     {
---       "name": "image",
---       "type": "blob",
---       "default": null,
---       "nullable": false
---     },
---     {
---       "name": "embedding",
---       "type": "vector",
---       "default": null,
---       "nullable": false
---     }
---   ]
--- }
--- $json$::jsonb);
+CALL rxdb_base.create_type_with_prefill('rxdb_base','image', $json$
+{
+  "columns": [
+    {
+      "name": "image",
+      "type": "bytea",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "embedding",
+      "type": "vector",
+      "default": null,
+      "nullable": false
+    }
+  ]
+}
+$json$::jsonb);
 -- TODO add vector index manually
 
 -- Article
