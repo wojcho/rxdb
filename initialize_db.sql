@@ -994,7 +994,7 @@ BEGIN
         CONTINUE;
       END IF;
 
-      -- TODO revoke all from everyone, not just public
+      -- revoke all from everyone, not just public
       CALL rxdb_base.revoke_all_relation_grants(
         domain_name,
         rel_name
@@ -1214,8 +1214,7 @@ $$;
 --       "unique": true,
 --       "columns": [
 --         "version_id"
---       ],
---       "access_method": "btree"
+--       ]
 --     }
 --   },
 --   "primary_key": [
@@ -1339,8 +1338,6 @@ BEGIN
       jsonb_build_object(
         'unique', i.indisunique,
 
-        'access_method', am.amname,
-
         'columns',
           (SELECT jsonb_agg(a.attname ORDER BY k.n)
           FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, n)
@@ -1368,19 +1365,6 @@ BEGIN
   RETURN COALESCE(retval, '{}'::jsonb);
 END;
 $$;
-
--- Test usage
--- CREATE TABLE IF NOT EXISTS rxdb_base.test_gin (
---   version_id character varying NOT NULL,
---   data jsonb NOT NULL DEFAULT '{}'::jsonb
--- );
--- ALTER TABLE rxdb_base.test_gin ADD COLUMN search tsvector;
--- CREATE INDEX IF NOT EXISTS test_gin_search_gin_idx
--- ON rxdb_base.test_gin
--- USING gin (search);
--- SELECT rxdb_base.select_table_definition('rxdb_base', 'log_version');
--- SELECT rxdb_base.select_table_definition('rxdb_base', 'test_gin');
--- {"columns": [{"name": "version_id", "type": "character varying", "default": null, "nullable": false}, {"name": "data", "type": "jsonb", "default": "'{}'::jsonb", "nullable": false}, {"name": "search", "type": "tsvector", "default": null, "nullable": true}], "indexes": {"rxdb_base.test_gin_search_gin_idx": {"unique": false, "columns": ["search"], "access_method": "gin"}}, "primary_key": null, "foreign_keys": null}
 
 -- Create Custom Type/Table (anyone with access to schema can run)
 CREATE OR REPLACE PROCEDURE rxdb_base.create_type(
@@ -2236,7 +2220,7 @@ COMMIT;
 -- Image
 -- version_id VARCHAR(1024)
 -- image BLOB
--- embedding VECTOR(512) (with vector index)
+-- embedding VECTOR(512)
 -- CALL rxdb_base.create_type_with_prefill('rxdb_base','image', $json$
 -- {
 --   "columns": [
@@ -2253,46 +2237,67 @@ COMMIT;
 --       "nullable": false
 --     }
 --   ]
---   -- TODO indexes
 -- }
 -- $json$::jsonb);
+-- TODO add vector index manually
 
 -- Article
 -- version_id VARCHAR(1024)
 -- background_image_object_id UUID (FK rxdb_base.object.object_id)
--- main_image_object_id  UUID (FK rxdb_base.object.object_id)
--- main_text TEXT (with GIN index)
--- CALL rxdb_base.create_type_with_prefill('rxdb_base','article', $json$
--- {
---   "columns": [
---     {
---       "name": "background_image_object_id",
---       "type": "uuid",
---       "default": null,
---       "nullable": false
---     },
---     {
---       "name": "main_image_object_id",
---       "type": "uuid",
---       "default": null,
---       "nullable": false
---     },
---     {
---       "name": "main_text",
---       "type": "text",
---       "default": null,
---       "nullable": false
---     }
---   ]
---   -- TODO indexes, FK
--- }
--- $json$::jsonb);
+-- main_image_object_id UUID (FK rxdb_base.object.object_id)
+-- main_text TEXT
+CALL rxdb_base.create_type_with_prefill('rxdb_base','article', $json$
+{
+  "columns": [
+    {
+      "name": "background_image_object_id",
+      "type": "uuid",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "main_image_object_id",
+      "type": "uuid",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "main_text",
+      "type": "text",
+      "default": null,
+      "nullable": false
+    }
+  ],
+  "foreign_keys": {
+    "fk_article_background_image_object": {
+      "columns": ["background_image_object_id"],
+      "on_delete": "RESTRICT",
+      "on_update": "RESTRICT",
+      "references": {
+        "schema": "rxdb_base",
+        "table": "object",
+        "columns": ["object_id"]
+      }
+    },
+    "fk_article_main_image_object": {
+      "columns": ["main_image_object_id"],
+      "on_delete": "RESTRICT",
+      "on_update": "RESTRICT",
+      "references": {
+        "schema": "rxdb_base",
+        "table": "object",
+        "columns": ["object_id"]
+      }
+    }
+  }
+}
+$json$::jsonb);
 
 -- Forum Thread
 -- version_id VARCHAR(1024)
 -- parent_object_id UUID (FK rxdb_base.object.object_id)
 -- is_leaf BOOLEAN
--- description TEXT (with GIN index)
+-- description TEXT
 CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_thread', $json$
 {
   "columns": [
@@ -2333,8 +2338,6 @@ CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_thread', $json$
   }
 }
 $json$::jsonb);
--- TODO indexes, FK
-SELECT rxdb_base.select_table_definition('rxdb_base', 'forum_thread');
 
 -- Forum Post
 -- version_id VARCHAR(1024)
@@ -2395,78 +2398,96 @@ CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
   }
 }
 $json$::jsonb);
--- TODO indexes, FK
-SELECT rxdb_base.select_table_names_in_schema('rxdb_base');
-SELECT rxdb_base.select_table_definition('rxdb_base', 'forum_post');
 
 -- Chat Message
 -- version_id VARCHAR(1024)
 -- reply_to_message_object_id UUID (FK rxdb_base.object.object_id)
 -- domain_name VARCHAR
--- CALL rxdb_base.create_type_with_prefill('rxdb_base','chat_message', $json$
--- {
---   "columns": [
---     {
---       "name": "reply_to_message_object_id",
---       "type": "uuid",
---       "default": null,
---       "nullable": false
---     },
---     {
---       "name": "domain_name",
---       "type": "character varying",
---       "default": null,
---       "nullable": false
---     }
---   ]
--- }
--- $json$::jsonb);
-
+CALL rxdb_base.create_type_with_prefill('rxdb_base','chat_message', $json$
+{
+  "columns": [
+    {
+      "name": "reply_to_message_object_id",
+      "type": "uuid",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "domain_name",
+      "type": "character varying",
+      "default": null,
+      "nullable": false
+    }
+  ],
+  "foreign_keys": {
+    "fk_chat_message_reply_object": {
+      "columns": ["reply_to_message_object_id"],
+      "on_delete": "RESTRICT",
+      "on_update": "RESTRICT",
+      "references": {
+        "schema": "rxdb_base",
+        "table": "object",
+        "columns": ["object_id"]
+      }
+    }
+  }
+}
+$json$::jsonb);
 
 -- Notebook
 -- version_id VARCHAR(1024)
--- description TEXT (with GIN index)
--- CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
--- {
---   "columns": [
---     {
---       "name": "description",
---       "type": "text",
---       "default": null,
---       "nullable": false
---     }
---   ]
--- }
--- $json$::jsonb);
--- TODO index
+-- description TEXT
+CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
+{
+  "columns": [
+    {
+      "name": "description",
+      "type": "text",
+      "default": null,
+      "nullable": false
+    }
+  ]
+}
+$json$::jsonb);
 
 -- Notebook Cell
 -- version_id VARCHAR(1024)
 -- notebook_object_id UUID (FK rxdb_base.object.object_id)
 -- is_hideable BOOLEAN
--- main_code TEXT (with GIN index)
--- CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
--- {
---   "columns": [
---     {
---       "name": "notebook_object_id",
---       "type": "uuid",
---       "default": null,
---       "nullable": false
---     },
---     {
---       "name": "is_hideable",
---       "type": "boolean",
---       "default": null,
---       "nullable": false
---     },
---     {
---       "name": "main_code",
---       "type": "text",
---       "default": null,
---       "nullable": false
---     }
---   ]
--- }
--- $json$::jsonb);
--- TODO indexes, FK
+-- main_code TEXT
+CALL rxdb_base.create_type_with_prefill('rxdb_base','notebook_cell', $json$
+{
+  "columns": [
+    {
+      "name": "notebook_object_id",
+      "type": "uuid",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "is_hideable",
+      "type": "boolean",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "main_code",
+      "type": "text",
+      "default": null,
+      "nullable": false
+    }
+  ],
+  "foreign_keys": {
+  "fk_notebook_cell_notebook_object": {
+    "columns": ["notebook_object_id"],
+    "on_delete": "RESTRICT",
+    "on_update": "RESTRICT",
+    "references": {
+      "schema": "rxdb_base",
+      "table": "object",
+      "columns": ["object_id"]
+    }
+  }
+}
+}
+$json$::jsonb);
