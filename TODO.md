@@ -1,15 +1,6 @@
-- fulltext search index support
-- vector search index support
+- security on procedures
 
-- image
-- article
-- forum
-- chat
-- notebook
-
-- logs
-
-- connect with jooq or sqlalchemy
+- connect with jooq or sqlalchemy 2.0 reflection or sqlacodegen
 
 - tests
 - rest api
