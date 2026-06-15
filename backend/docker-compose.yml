@@ -12,18 +12,24 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
       - ./initdb:/docker-entrypoint-initdb.d:Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rxdb_admin -d postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
 
   app:
     build: .
     container_name: sqlalchemy_app
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg2://rxdb_admin:SECRET_HERE@db:5432/postgres
     volumes:
       - .:/app:ro,Z
     working_dir: /app
-    command: python app/main.py
+    command: python -m app.main
 
 volumes:
   pgdata:
