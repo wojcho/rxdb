@@ -15,6 +15,6 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 # Reflection base
-Base = automap_base()
-metadata = MetaData()
-
+metadata = MetaData(schema="rxdb_base")
+Base = automap_base(metadata=metadata)
+Base.prepare(autoload_with=engine)

@@ -2448,7 +2448,7 @@ $json$::jsonb);
 -- Notebook
 -- version_id VARCHAR(1024)
 -- description TEXT
-CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
+CALL rxdb_base.create_type_with_prefill('rxdb_base','notebook', $json$
 {
   "columns": [
     {
