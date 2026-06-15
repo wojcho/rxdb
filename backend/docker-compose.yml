@@ -1,0 +1,29 @@
+services:
+  db:
+    image: pgvector/pgvector:pg18-trixie
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: rxdb_admin
+      POSTGRES_PASSWORD: SECRET_HERE
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:Z
+
+  app:
+    build: .
+    container_name: sqlalchemy_app
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql+psycopg2://rxdb_admin:SECRET_HERE@db:5432/postgres
+    volumes:
+      - .:/app:ro,Z
+    working_dir: /app
+    command: python app/main.py
+
+volumes:
+  pgdata:
