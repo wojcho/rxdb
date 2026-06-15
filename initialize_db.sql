@@ -2240,7 +2240,11 @@ CALL rxdb_base.create_type_with_prefill('rxdb_base','image', $json$
   ]
 }
 $json$::jsonb);
--- TODO add vector index manually
+ALTER TABLE rxdb_base.image DROP COLUMN embedding;
+ALTER TABLE rxdb_base.image ADD COLUMN embedding vector(1536);
+CREATE INDEX IF NOT EXISTS image_embedding_hnsw_idx ON rxdb_base.image USING hnsw (embedding vector_cosine_ops);
+SELECT rxdb_base.select_table_definition('rxdb_base', 'image');
+-- {"columns": [{"name": "version_id", "type": "character varying", "default": null, "nullable": false}, {"name": "image", "type": "bytea", "default": null, "nullable": false}, {"name": "embedding", "type": "USER-DEFINED", "default": null, "nullable": true}], "indexes": {"rxdb_base.image_pkey": {"unique": true, "columns": ["version_id"]}, "rxdb_base.\"rxdb_base.image_pkey\"": {"unique": false, "columns": ["version_id"]}, "rxdb_base.image_embedding_hnsw_idx": {"unique": false, "columns": ["embedding"]}}, "primary_key": ["version_id"], "foreign_keys": {"fk_image_version_rxdb_base": {"columns": ["version_id"], "on_delete": "RESTRICT", "on_update": "RESTRICT", "references": {"table": "version", "schema": "rxdb_base", "columns": ["version_id"]}}}}
 
 -- Article
 -- version_id VARCHAR(1024)
