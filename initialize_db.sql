@@ -2,15 +2,15 @@
 -- ```
 -- sudo docker rm -f pg-test \
 -- && sudo docker run --rm --name pg-test \
---   -e POSTGRES_USER=myuser \
---   -e POSTGRES_PASSWORD=pass \
+--   -e POSTGRES_USER=rxdb_admin \
+--   -e POSTGRES_PASSWORD=SECRET_HERE \
 --   -p 5432:5432 -d postgres:18
 -- ```
 -- In PostgreSQL VSCodium extension set the following:
 -- Server name: localhost
 -- Port: 5432
--- User name: postgres
--- Password: pass
+-- User name: rxdb_admin
+-- Password: SECRET_HERE
 -- Database: postgres
 
 -- =====================================================
@@ -1737,6 +1737,33 @@ BEGIN
 END;
 $$;
 
+-- Create a new type, but first run rxdb_base.prefill_table_definition on passed table_definition
+CREATE OR REPLACE PROCEDURE rxdb_base.create_type_with_prefill(
+  domain_name VARCHAR,
+  type_name VARCHAR,
+  table_definition JSONB -- as returned by rxdb_base.select_table_definition
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  complete_definition JSONB;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = domain_name AND table_name = type_name
+  ) THEN
+
+    WITH def AS (
+      SELECT rxdb_base.prefill_table_definition(domain_name, type_name, table_definition) AS obj
+    )
+    SELECT def.obj INTO complete_definition FROM def;
+
+    CALL rxdb_base.create_type(domain_name, type_name, complete_definition);
+  
+  END IF;
+END;
+$$;
+
 -- Helper function for rxdb_base.insert_custom, rxdb_base.update_custom
 CREATE OR REPLACE FUNCTION rxdb_base.is_valid_custom_mutate_payload(
   domain_name VARCHAR,
@@ -2141,36 +2168,45 @@ DECLARE
   new_password_hashed VARCHAR;
   current_creating_user_object_id UUID := '11111111-1111-1111-1111-111111111111'::uuid;
   new_username VARCHAR := 'rxdb_admin';
+  exists_flag BOOLEAN;
 BEGIN
-  new_password_hashed := crypt('SECRET_HERE', gen_salt('bf'));
-  EXECUTE format(
-    'GRANT rxdb_user TO %I',
-    new_username
-  );
-  INSERT INTO rxdb_base.object(
-    object_id,
-    creating_user_object_id
-  ) VALUES (
-    current_creating_user_object_id, -- Initial user is self-created
-    current_creating_user_object_id
-  ) RETURNING object_id
-    INTO new_object_id;
-  INSERT INTO rxdb_base.version(
-    version_id,
-    object_id,
-    creating_user_object_id
-  ) VALUES (
-    new_username,
-    new_object_id,
-    current_creating_user_object_id
-  );
-  INSERT INTO rxdb_private.user_version(
-    version_id,
-    password_hashed
-  ) VALUES (
-    new_username,
-    new_password_hashed
-  );
+  SELECT EXISTS ( -- For easier testing and iteration on SQL script
+    SELECT 1
+    FROM rxdb_base.object
+    WHERE object_id = current_creating_user_object_id
+  ) INTO exists_flag;
+
+  IF NOT exists_flag THEN
+    new_password_hashed := crypt('SECRET_HERE', gen_salt('bf'));
+    EXECUTE format(
+      'GRANT rxdb_user TO %I',
+      new_username
+    );
+    INSERT INTO rxdb_base.object(
+      object_id,
+      creating_user_object_id
+    ) VALUES (
+      current_creating_user_object_id, -- Initial user is self-created
+      current_creating_user_object_id
+    ) RETURNING object_id
+      INTO new_object_id;
+    INSERT INTO rxdb_base.version(
+      version_id,
+      object_id,
+      creating_user_object_id
+    ) VALUES (
+      new_username,
+      new_object_id,
+      current_creating_user_object_id
+    );
+    INSERT INTO rxdb_private.user_version(
+      version_id,
+      password_hashed
+    ) VALUES (
+      new_username,
+      new_password_hashed
+    );
+  END IF;
 END
 $$ LANGUAGE plpgsql;
 COMMIT;
@@ -2179,60 +2215,241 @@ COMMIT;
 -- Custom types
 -- =====================================================
 
--- DO $$
--- DECLARE
---   obj jsonb;
--- BEGIN
---   WITH def AS (
---     SELECT rxdb_base.prefill_table_definition('rxdb_base','testing', $json$
---     {
---       "columns": [
---         {
---           "name": "abc",
---           "type": "integer",
---           "default": null,
---           "nullable": false
---         }
---       ]
---     }
---     $json$::jsonb) AS obj
---   )
---   SELECT def.obj INTO obj FROM def;
---   CALL rxdb_base.create_type('rxdb_base','testing', obj);
--- END $$;
-
 -- Image
 -- version_id VARCHAR(1024)
 -- image BLOB
 -- embedding VECTOR(512) (with vector index)
+-- CALL rxdb_base.create_type_with_prefill('rxdb_base','image', $json$
+-- {
+--   "columns": [
+--     {
+--       "name": "image",
+--       "type": "blob",
+--       "default": null,
+--       "nullable": false
+--     },
+--     {
+--       "name": "embedding",
+--       "type": "vector",
+--       "default": null,
+--       "nullable": false
+--     }
+--   ]
+--   -- TODO indexes
+-- }
+-- $json$::jsonb);
 
 -- Article
 -- version_id VARCHAR(1024)
--- background_image UUID (FK rxdb_base.object.object_id)
--- main_image object (FK rxdb_base.object.object_id)
+-- background_image_object_id UUID (FK rxdb_base.object.object_id)
+-- main_image_object_id  UUID (FK rxdb_base.object.object_id)
 -- main_text TEXT (with fulltext search index)
+-- CALL rxdb_base.create_type_with_prefill('rxdb_base','article', $json$
+-- {
+--   "columns": [
+--     {
+--       "name": "background_image_object_id",
+--       "type": "uuid",
+--       "default": null,
+--       "nullable": false
+--     },
+--     {
+--       "name": "main_image_object_id",
+--       "type": "uuid",
+--       "default": null,
+--       "nullable": false
+--     },
+--     {
+--       "name": "main_text",
+--       "type": "text",
+--       "default": null,
+--       "nullable": false
+--     }
+--   ]
+--   -- TODO indexes, FK
+-- }
+-- $json$::jsonb);
 
 -- Forum Thread
 -- version_id VARCHAR(1024)
--- parent_forum_thread_object_id VARCHAR(1024) (FK rxdb_base.object.object_id)
+-- parent_object_id UUID (FK rxdb_base.object.object_id)
 -- is_leaf BOOLEAN
 -- description TEXT (with fulltext search index)
+CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_thread', $json$
+{
+  "columns": [
+    {
+      "name": "parent_object_id",
+      "type": "uuid",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "is_leaf",
+      "type": "boolean",
+      "default": true,
+      "nullable": false
+    },
+    {
+      "name": "description",
+      "type": "text",
+      "default": null,
+      "nullable": false
+    }
+  ],
+  "foreign_keys": {
+    "fk_forum_thread_parent_object": {
+      "columns": [
+        "parent_object_id"
+      ],
+      "on_delete": "RESTRICT",
+      "on_update": "RESTRICT",
+      "references": {
+        "schema": "rxdb_base",
+        "table": "object",
+        "columns": [
+          "object_id"
+        ]
+      }
+    }
+  }
+}
+$json$::jsonb);
+-- TODO indexes, FK
+SELECT rxdb_base.select_table_definition('rxdb_base', 'forum_thread');
 
 -- Forum Post
 -- version_id VARCHAR(1024)
--- forum_thread_object_id VARCHAR(1024) (FK rxdb_base.object.object_id)
--- Main text TEXT (with fulltext search index)
+-- forum_thread_object_id UUID (FK rxdb_base.object.object_id)
+-- reply_to_forum_post_object_id UUID (FK rxdb_base.object.object_id)
+-- main_text TEXT (with fulltext search index)
+CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
+{
+  "columns": [
+    {
+      "name": "forum_thread_object_id",
+      "type": "uuid",
+      "default": null,
+      "nullable": false
+    },
+    {
+      "name": "reply_to_forum_post_object_id",
+      "type": "uuid",
+      "default": null,
+      "nullable": true
+    },
+    {
+      "name": "main_text",
+      "type": "text",
+      "default": null,
+      "nullable": false
+    }
+  ],
+  "foreign_keys": {
+    "fk_forum_post_thread_object": {
+      "columns": [
+        "forum_thread_object_id"
+      ],
+      "on_delete": "RESTRICT",
+      "on_update": "RESTRICT",
+      "references": {
+        "schema": "rxdb_base",
+        "table": "object",
+        "columns": [
+          "object_id"
+        ]
+      }
+    },
+    "fk_forum_post_reply_object": {
+      "columns": [
+        "reply_to_forum_post_object_id"
+      ],
+      "on_delete": "RESTRICT",
+      "on_update": "RESTRICT",
+      "references": {
+        "schema": "rxdb_base",
+        "table": "object",
+        "columns": [
+          "object_id"
+        ]
+      }
+    }
+  }
+}
+$json$::jsonb);
+-- TODO indexes, FK
+SELECT rxdb_base.select_table_names_in_schema('rxdb_base');
+SELECT rxdb_base.select_table_definition('rxdb_base', 'forum_post');
 
 -- Chat Message
 -- version_id VARCHAR(1024)
+-- reply_to_message_object_id UUID (FK rxdb_base.object.object_id)
 -- domain_name VARCHAR
+-- CALL rxdb_base.create_type_with_prefill('rxdb_base','chat_message', $json$
+-- {
+--   "columns": [
+--     {
+--       "name": "reply_to_message_object_id",
+--       "type": "uuid",
+--       "default": null,
+--       "nullable": false
+--     },
+--     {
+--       "name": "domain_name",
+--       "type": "character varying",
+--       "default": null,
+--       "nullable": false
+--     }
+--   ]
+-- }
+-- $json$::jsonb);
+
 
 -- Notebook
 -- version_id VARCHAR(1024)
 -- description TEXT (with fulltext search index)
+-- CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
+-- {
+--   "columns": [
+--     {
+--       "name": "description",
+--       "type": "text",
+--       "default": null,
+--       "nullable": false
+--     }
+--   ]
+-- }
+-- $json$::jsonb);
+-- TODO index
+
 
 -- Notebook Cell
 -- version_id VARCHAR(1024)
--- forum_thread_object_id VARCHAR(1024) (FK rxdb_base.object.object_id)
--- main_code TEXT (with fulltext search index)
+-- notebook_object_id UUID (FK rxdb_base.object.object_id)
 -- is_hideable BOOLEAN
+-- main_code TEXT (with fulltext search index)
+-- CALL rxdb_base.create_type_with_prefill('rxdb_base','forum_post', $json$
+-- {
+--   "columns": [
+--     {
+--       "name": "notebook_object_id",
+--       "type": "uuid",
+--       "default": null,
+--       "nullable": false
+--     },
+--     {
+--       "name": "is_hideable",
+--       "type": "boolean",
+--       "default": null,
+--       "nullable": false
+--     },
+--     {
+--       "name": "main_code",
+--       "type": "text",
+--       "default": null,
+--       "nullable": false
+--     }
+--   ]
+-- }
+-- $json$::jsonb);
+-- TODO indexes, FK
