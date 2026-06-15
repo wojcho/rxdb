@@ -2151,6 +2151,14 @@ GRANT EXECUTE
 ON PROCEDURE rxdb_private.insert_user
 TO rxdb_admin;
 
+ALTER FUNCTION rxdb_base.current_user_object_id() OWNER TO rxdb_admin;
+GRANT EXECUTE ON FUNCTION rxdb_base.select_accessible_schemas() TO PUBLIC;
+REVOKE ALL ON FUNCTION rxdb_private.insert_user FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rxdb_private.insert_user TO rxdb_admin;
+ALTER FUNCTION rxdb_private.insert_user(VARCHAR, VARCHAR)
+SET search_path = rxdb_private, pg_temp;
+GRANT EXECUTE ON FUNCTION rxdb_base.insert_log(VARCHAR, JSONB) TO PUBLIC;
+
 -- Any user can create their own schemas, where they can do anything
 GRANT CREATE ON DATABASE postgres TO PUBLIC;
 
